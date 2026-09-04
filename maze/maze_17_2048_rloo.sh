@@ -13,8 +13,8 @@ VAL_DATA="${REPO_ROOT}/maze/data/maze_17_2048/test.parquet"
 CHECKPOINT_DIR="${REPO_ROOT}/checkpoints"
 
 # Physical GPU assigned to this experiment. Ray sees it as logical GPU 0.
-GPU_IDS=(0)
-export CUDA_VISIBLE_DEVICES=0
+GPU_IDS=(6)
+export CUDA_VISIBLE_DEVICES=6
 
 # Mitigate allocator fragmentation from changing rollout sequence lengths.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -30,7 +30,7 @@ N_VAL=256
 TRAIN_BATCH_SIZE=32
 # 2,048 prompts / 32 prompts per step = 64 steps per epoch.
 STEPS_PER_EPOCH=64
-TOTAL_EPOCHS=10
+TOTAL_EPOCHS=50
 
 PROJECT_NAME=maxrl-maze-2048
 EXPERIMENT_NAME=${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts
