@@ -72,6 +72,7 @@ Thumbs.db
 
 # Local configuration (keep examples but ignore local paths)
 # Note: Training scripts with local paths should use placeholders
+/AGENTS.md
 .env
 .env.*
 !.env.example
