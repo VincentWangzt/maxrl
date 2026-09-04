@@ -57,6 +57,7 @@ def run_ppo(config) -> None:
         else: 
             ray_init_kwargs["address"] = None
             ray_init_kwargs["_temp_dir"] = config.ray_init.ray_dir
+            ray_init_kwargs["include_dashboard"] = config.ray_init.get("include_dashboard", None)
 
         ray.init(**ray_init_kwargs)
 

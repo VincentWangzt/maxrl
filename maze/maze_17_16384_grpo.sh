@@ -12,17 +12,12 @@ TRAIN_DATA="${REPO_ROOT}/maze/data/maze_17_16384/train.parquet"
 VAL_DATA="${REPO_ROOT}/maze/data/maze_17_16384/test.parquet"
 CHECKPOINT_DIR="${REPO_ROOT}/checkpoints"
 
-# Physical GPUs assigned to this experiment. Ray sees these as logical GPUs 0-3.
+# Physical GPUs assigned to this experiment. Ray sees these as logical GPUs 0-1.
 GPU_IDS=(0 1)
 export CUDA_VISIBLE_DEVICES=0,1
 
 # Mitigate allocator fragmentation from changing rollout sequence lengths.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-# Use a dedicated Ray address and state directory on the shared server.
-RAY_PORT=8341
-RAY_DASHBOARD_PORT=8342
-RAY_TEMP_DIR="/home/zitongw2/tmp/ray-maxrl-${RAY_PORT}"
 
 # Training hyperparameters
 ADVANTAGE_ESTIMATOR=grpo
@@ -59,18 +54,6 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
   exit 1
 fi
 
-for ray_port in "${RAY_PORT}" "${RAY_DASHBOARD_PORT}"; do
-  if ss -ltnH "sport = :${ray_port}" | grep -q .; then
-    echo "Ray port ${ray_port} is already in use." >&2
-    exit 1
-  fi
-done
-
-if pgrep -u "$(id -u)" -f '[r]aylet|[g]cs_server' >/dev/null; then
-  echo "This account already owns a Ray cluster. Stop it or use another account before starting this experiment." >&2
-  exit 1
-fi
-
 for gpu_id in "${GPU_IDS[@]}"; do
   if nvidia-smi --id="${gpu_id}" --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | grep -Eq '[0-9]'; then
     echo "GPU ${gpu_id} already has a compute process; refusing to overlap workloads." >&2
@@ -78,49 +61,20 @@ for gpu_id in "${GPU_IDS[@]}"; do
   fi
 done
 
-mkdir -p "${CHECKPOINT_DIR}" "${RAY_TEMP_DIR}"
-unset RAY_ADDRESS
+mkdir -p "${CHECKPOINT_DIR}" "${HOME}/tmp"
+RAY_TEMP_DIR="$(mktemp -d "${HOME}/tmp/ray-maze-XXXXXX")"
 
-ray_started=1
-cleanup_ray() {
-  if [[ "${ray_started}" -eq 1 ]]; then
-    ray stop --force >/dev/null 2>&1 || true
-    if pgrep -u "$(id -u)" -f '[r]aylet|[g]cs_server' >/dev/null; then
-      echo "Ray cleanup left processes running for this account." >&2
-    fi
-  fi
-}
-trap cleanup_ray EXIT
-
-ray start --head \
-  --port="${RAY_PORT}" \
-  --dashboard-port="${RAY_DASHBOARD_PORT}" \
-  --num-gpus=2 \
-  --temp-dir="${RAY_TEMP_DIR}" \
-  --include-dashboard=false \
-  --disable-usage-stats
-
-export RAY_ADDRESS="$(<"${RAY_TEMP_DIR}/ray_current_cluster")"
-
-ray_ready=0
-for _ in {1..30}; do
-  if ray status 2>&1 | grep -q 'Active:'; then
-    ray_ready=1
-    break
-  fi
-  sleep 1
-done
-
-if [[ "${ray_ready}" -ne 1 ]]; then
-  echo "Ray did not become ready on ${RAY_ADDRESS} within 30 seconds." >&2
-  exit 1
-fi
-
-ray status
+# ray.init() creates and owns this cluster, including cleanup on process exit.
+# A local address prevents attaching to another experiment's Ray cluster.
+export RAY_ADDRESS=local
+export RAY_USAGE_STATS_ENABLED=0
+echo "Ray logs and state: ${RAY_TEMP_DIR}"
 
 # ============ Training ============
-python3 -m verl.trainer.main_ppo \
+# Replace the shell so SIGINT/SIGTERM reach Ray's owning Python process.
+exec python3 -m verl.trainer.main_ppo \
   "ray_init.ray_dir=${RAY_TEMP_DIR}" \
+  ray_init.include_dashboard=False \
   algorithm.adv_estimator=${ADVANTAGE_ESTIMATOR} \
   algorithm.use_kl_in_reward=False \
   algorithm.pass_k=4 \

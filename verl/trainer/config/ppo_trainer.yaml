@@ -1049,6 +1049,9 @@ ray_init:
   # Number of CPUs for Ray. Use a fixed number instead of null when using SLURM.
   num_cpus: null
 
+  # Whether to start the dashboard for a new local cluster; null uses Ray's default.
+  include_dashboard: null
+
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null
 
