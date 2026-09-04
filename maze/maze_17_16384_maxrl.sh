@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Maze 17x17 Training Script
+# Maze 17x17 16,384-sample MaxRL Training Script
 
 set -euo pipefail
 
@@ -8,20 +8,20 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 MODEL_PATH="${REPO_ROOT}/maze/ckpt-1500"
-TRAIN_DATA="${REPO_ROOT}/maze/data/train.parquet"
-VAL_DATA="${REPO_ROOT}/maze/data/test.parquet"
+TRAIN_DATA="${REPO_ROOT}/maze/data/maze_17_16384/train.parquet"
+VAL_DATA="${REPO_ROOT}/maze/data/maze_17_16384/test.parquet"
 CHECKPOINT_DIR="${REPO_ROOT}/checkpoints"
 
 # Physical GPUs assigned to this experiment. Ray sees these as logical GPUs 0-3.
-GPU_IDS=(6 7 8 9)
-export CUDA_VISIBLE_DEVICES=6,7,8,9
+GPU_IDS=(0 1 2 3)
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Mitigate allocator fragmentation from changing rollout sequence lengths.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Use a dedicated Ray address and state directory on the shared server.
-RAY_PORT=8341
-RAY_DASHBOARD_PORT=8342
+RAY_PORT=8353
+RAY_DASHBOARD_PORT=8352
 RAY_TEMP_DIR="/home/zitongw2/tmp/ray-maxrl-${RAY_PORT}"
 
 # Training hyperparameters
@@ -29,10 +29,10 @@ ADVANTAGE_ESTIMATOR=maxrl
 TRUNCATE_ORDER=64
 LR=1e-4
 N_ROLLOUTS=128
-N_VAL=2048
-TRAIN_BATCH_SIZE=256
+N_VAL=256
+TRAIN_BATCH_SIZE=128
 
-PROJECT_NAME=MaxRL_Maze_17x17
+PROJECT_NAME=maxrl-maze-16384
 EXPERIMENT_NAME=${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts
 
 # ============ Ray Setup ============
@@ -66,10 +66,10 @@ for ray_port in "${RAY_PORT}" "${RAY_DASHBOARD_PORT}"; do
   fi
 done
 
-if pgrep -u "$(id -u)" -f '[r]aylet|[g]cs_server' >/dev/null; then
-  echo "This account already owns a Ray cluster. Stop it or use another account before starting this experiment." >&2
-  exit 1
-fi
+# if pgrep -u "$(id -u)" -f '[r]aylet|[g]cs_server' >/dev/null; then
+#   echo "This account already owns a Ray cluster. Stop it or use another account before starting this experiment." >&2
+#   exit 1
+# fi
 
 for gpu_id in "${GPU_IDS[@]}"; do
   if nvidia-smi --id="${gpu_id}" --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | grep -Eq '[0-9]'; then
@@ -133,7 +133,9 @@ python3 -m verl.trainer.main_ppo \
   data.apply_chat_template=False \
   "actor_rollout_ref.model.path=${MODEL_PATH}" \
   actor_rollout_ref.actor.optim.lr=${LR} \
+  "+actor_rollout_ref.actor.optim.betas=[0.9,0.95]" \
   actor_rollout_ref.actor.use_kl_loss=False \
+  actor_rollout_ref.actor.clip_ratio_high=0.28 \
   actor_rollout_ref.actor.dtype=float16 \
   actor_rollout_ref.actor.ppo_mini_batch_size=${TRAIN_BATCH_SIZE} \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4096 \
@@ -158,8 +160,9 @@ python3 -m verl.trainer.main_ppo \
   trainer.val_before_train=True \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \
-  trainer.save_freq=250 \
-  trainer.test_freq=250 \
+  trainer.save_freq=128 \
+  trainer.test_freq=64 \
   trainer.max_actor_ckpt_to_keep=300 \
   "trainer.default_local_dir=${CHECKPOINT_DIR}/${PROJECT_NAME}/${EXPERIMENT_NAME}" \
-  trainer.total_epochs=10
+  trainer.total_epochs=20 \
+  trainer.total_training_steps=2560
