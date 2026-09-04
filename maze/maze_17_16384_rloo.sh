@@ -74,7 +74,6 @@ echo "Ray logs and state: ${RAY_TEMP_DIR}"
 # Replace the shell so SIGINT/SIGTERM reach Ray's owning Python process.
 exec python3 -m verl.trainer.main_ppo \
   "ray_init.ray_dir=${RAY_TEMP_DIR}" \
-  ray_init.include_dashboard=False \
   algorithm.adv_estimator=${ADVANTAGE_ESTIMATOR} \
   algorithm.use_kl_in_reward=False \
   algorithm.pass_k=4 \
