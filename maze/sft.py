@@ -1,21 +1,20 @@
-import os
-import sys
-import json
-import time
 import argparse
+import json
 import logging
-from typing import Dict, List, Optional, Tuple
+import os
+import time
 from collections import deque
+from typing import Dict, List, Optional, Tuple
 
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import AdamW
-from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config, get_cosine_schedule_with_warmup
-from tokenizers import Tokenizer, models as tok_models, pre_tokenizers, AddedToken
-from tqdm import tqdm
-import pandas as pd
 import numpy as np
+import pandas as pd
+import torch
+from tokenizers import AddedToken, Tokenizer, pre_tokenizers
+from tokenizers import models as tok_models
+from torch.optim import AdamW
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2Config, get_cosine_schedule_with_warmup
 
 try:
     import wandb
@@ -59,7 +58,7 @@ class MazeSFTDataset(Dataset):
         else:
             # JSON格式
             logger.info(f"Reading JSON file: {data_path}")
-            with open(data_path, 'r') as f:
+            with open(data_path) as f:
                 data = json.load(f)
             logger.info(f"Processing {len(data)} items...")
             for item in tqdm(data, desc=f"Loading {os.path.basename(data_path)}"):
@@ -227,7 +226,7 @@ class MazeValidator:
                     break
             
             return actions
-        except:
+        except Exception:
             return []
     
     def validate_path(self, sequence: str) -> Tuple[bool, str]:
@@ -415,7 +414,13 @@ class MazeSFTTrainer:
             weight_decay=0.01,
         )
         
-        total_steps = len(self.train_loader) * args.num_epochs
+        available_steps = len(self.train_loader) * args.num_epochs
+        if args.max_steps is not None and args.max_steps > available_steps:
+            raise ValueError(
+                f"max_steps={args.max_steps} exceeds the {available_steps} steps available "
+                f"across num_epochs={args.num_epochs}"
+            )
+        total_steps = args.max_steps if args.max_steps is not None else available_steps
         warmup_steps = int(total_steps * args.warmup_ratio)
         
         # 选择学习率调度器
@@ -455,6 +460,7 @@ class MazeSFTTrainer:
                     "batch_size": args.batch_size,
                     "micro_batch_size": args.micro_batch_size,
                     "num_epochs": args.num_epochs,
+                    "max_steps": args.max_steps,
                     "max_length": args.max_length,
                     "model_path": args.model_path,
                     "train_data": args.train_data,
@@ -555,7 +561,13 @@ class MazeSFTTrainer:
         return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
     
     @torch.no_grad()
-    def generative_evaluate(self, num_samples: int = 100, n_samples_per_prompt: int = 8, temperature: float = 1.0) -> Dict[str, float]:
+    def generative_evaluate(
+        self,
+        num_samples: int = 100,
+        n_samples_per_prompt: int = 8,
+        temperature: float = 1.0,
+        max_new_tokens: int = 64,
+    ) -> Dict[str, float]:
         """
         生成式评估：每个样本采样多次，计算Pass@k指标
         
@@ -566,6 +578,7 @@ class MazeSFTTrainer:
             num_samples: 评估的prompt数量
             n_samples_per_prompt: 每个prompt的采样次数 (n)
             temperature: 采样温度
+            max_new_tokens: 每个样本最多生成的token数
         
         Returns:
             包含Pass@1/2/4/8等指标的字典
@@ -591,10 +604,10 @@ class MazeSFTTrainer:
         indices = np.random.choice(len(self.val_dataset), min(num_samples, len(self.val_dataset)), replace=False)
         
         # 获取eos_token_id
-        try:
-            done_token_id = self.tokenizer.encode("DONE", add_special_tokens=False)[0]
-        except:
-            done_token_id = self.tokenizer.eos_token_id
+        done_token_ids = self.tokenizer.encode("DONE", add_special_tokens=False)
+        if not done_token_ids:
+            raise ValueError("Tokenizer does not encode the DONE token")
+        done_token_id = done_token_ids[0]
         
         for idx in tqdm(indices, desc="Generative Eval"):
             prompt = self.val_dataset.get_prompt(idx)
@@ -607,45 +620,39 @@ class MazeSFTTrainer:
             success_count = 0
             optimal_count = 0
             
-            # 对每个prompt采样n次
-            try:
-                # 批量生成n_samples_per_prompt个样本
-                output_ids = self.model.generate(
-                    input_ids,
-                    max_new_tokens=64,
-                    do_sample=True,
-                    temperature=temperature,
-                    num_return_sequences=n_samples_per_prompt,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=done_token_id,
-                )
-                
-                # 验证每个生成的路径
-                for i in range(n_samples_per_prompt):
-                    generated = self.tokenizer.decode(output_ids[i], skip_special_tokens=False)
-                    
-                    success, reason = self.validator.validate_path(generated)
-                    total_generations += 1
-                    
-                    if success:
-                        success_count += 1
-                        # 检查是否是最优路径
-                        generated_actions = self.validator.parse_actions(generated)
-                        if optimal_len is not None and len(generated_actions) == optimal_len:
-                            optimal_count += 1
-                    else:
-                        error_stats[reason] = error_stats.get(reason, 0) + 1
-                        
-            except Exception as e:
-                logger.debug(f"Generation error: {e}")
-                total_generations += n_samples_per_prompt
+            # 批量生成n_samples_per_prompt个样本
+            output_ids = self.model.generate(
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                num_return_sequences=n_samples_per_prompt,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=done_token_id,
+            )
+
+            # 验证每个生成的路径
+            for i in range(n_samples_per_prompt):
+                generated = self.tokenizer.decode(output_ids[i], skip_special_tokens=False)
+
+                success, reason = self.validator.validate_path(generated)
+                total_generations += 1
+
+                if success:
+                    success_count += 1
+                    # 检查是否是最优路径
+                    generated_actions = self.validator.parse_actions(generated)
+                    if optimal_len is not None and len(generated_actions) == optimal_len:
+                        optimal_count += 1
+                else:
+                    error_stats[reason] = error_stats.get(reason, 0) + 1
             
             all_success_counts.append(success_count)
             all_optimal_counts.append(optimal_count)
         
         # 计算Pass@k指标
         n = n_samples_per_prompt
-        k_values = [1, 2, 4, 8]
+        k_values = sorted({1, 2, 4, 8, n})
         
         metrics = {}
         
@@ -687,6 +694,7 @@ class MazeSFTTrainer:
         """训练主循环"""
         logger.info("Starting training...")
         
+        reached_max_steps = False
         for epoch in range(self.args.num_epochs):
             epoch_loss = 0.0
             num_batches = 0
@@ -714,6 +722,10 @@ class MazeSFTTrainer:
                         "train/epoch": epoch + 1,
                     }, step=self.global_step)
                 
+                # 先保存checkpoint，避免生成式评估失败时丢失训练状态
+                if self.global_step % self.args.save_steps == 0:
+                    self.save_checkpoint(self.global_step)
+
                 # 评估
                 if self.global_step % self.args.eval_steps == 0:
                     val_loss = self.validate_loss()
@@ -726,6 +738,7 @@ class MazeSFTTrainer:
                             num_samples=self.args.eval_samples,
                             n_samples_per_prompt=self.args.n_samples_per_prompt,
                             temperature=self.args.eval_temperature,
+                            max_new_tokens=self.args.eval_max_new_tokens,
                         )
                         eval_metrics.update(metrics)
                         logger.info(
@@ -738,19 +751,29 @@ class MazeSFTTrainer:
                             f"Step {self.global_step} - Optimal Pass@1={metrics.get('eval/optimal_pass@1', 0):.4f}, "
                             f"Avg Success={metrics.get('eval/avg_success_rate', 0):.4f}"
                         )
+                        logger.info(
+                            f"Step {self.global_step} - Pass@{self.args.n_samples_per_prompt}="
+                            f"{metrics.get(f'eval/pass@{self.args.n_samples_per_prompt}', 0):.4f}, "
+                            f"Optimal Pass@{self.args.n_samples_per_prompt}="
+                            f"{metrics.get(f'eval/optimal_pass@{self.args.n_samples_per_prompt}', 0):.4f}"
+                        )
                     
                     if self.use_wandb:
                         wandb.log(eval_metrics, step=self.global_step)
                 
-                # 保存checkpoint
-                if self.global_step % self.args.save_steps == 0:
-                    self.save_checkpoint(self.global_step)
+                if self.args.max_steps is not None and self.global_step >= self.args.max_steps:
+                    reached_max_steps = True
+                    break
             
             avg_loss = epoch_loss / max(num_batches, 1)
             logger.info(f"Epoch {epoch + 1} - Avg Loss: {avg_loss:.4f}")
+
+            if reached_max_steps:
+                break
         
         # 保存最终模型
-        self.save_checkpoint(self.global_step)
+        if self.global_step % self.args.save_steps != 0:
+            self.save_checkpoint(self.global_step)
         
         # 关闭wandb
         if self.use_wandb:
@@ -779,6 +802,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--micro_batch_size", type=int, default=8, help="Micro batch size for gradient accumulation")
     parser.add_argument("--num_epochs", type=int, default=10, help="Number of epochs")
+    parser.add_argument("--max_steps", type=int, default=None, help="Stop after this many optimizer steps")
     parser.add_argument("--max_length", type=int, default=512, help="Max sequence length")
     parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine", "constant"], help="Learning rate scheduler type")
     parser.add_argument("--warmup_ratio", type=float, default=0.0, help="Warmup ratio for learning rate scheduler")
@@ -790,6 +814,7 @@ def main():
     parser.add_argument("--eval_samples", type=int, default=100, help="Number of prompts for generative evaluation")
     parser.add_argument("--n_samples_per_prompt", type=int, default=8, help="Number of samples per prompt for Pass@k evaluation")
     parser.add_argument("--eval_temperature", type=float, default=1.0, help="Temperature for sampling during evaluation")
+    parser.add_argument("--eval_max_new_tokens", type=int, default=64, help="Maximum generated tokens per evaluation sample")
     
     # 日志参数
     parser.add_argument("--project_name", type=str, default="maze-sft", help="Project name for logging")
@@ -797,6 +822,13 @@ def main():
     parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging")
     
     args = parser.parse_args()
+
+    if args.max_steps is not None and args.max_steps <= 0:
+        parser.error("--max_steps must be positive")
+    if args.eval_max_new_tokens <= 0:
+        parser.error("--eval_max_new_tokens must be positive")
+    if args.n_samples_per_prompt <= 0:
+        parser.error("--n_samples_per_prompt must be positive")
     
     # 创建训练器并开始训练
     trainer = MazeSFTTrainer(args)
@@ -805,4 +837,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -129,6 +129,27 @@ or you can skip the SFT stage and use `maze/ckpt-1500`, which is a checkpoint af
 
 Setup path configurations in `maze/maze_17.sh`, then `bash maze/maze_17.sh`. Make sure to set `actor_rollout_ref.rollout.name=hf`, which significantly accelerates generation for very small models during RL training.
 
+### 23x23 Maze
+
+Generate the disjoint 100,000/128 SFT split and 1,024/128 RL split on the training server:
+
+```
+python -m maze.prepare_maze_23
+```
+
+Run the 3,000-step SFT experiment on an explicitly selected free GPU. It uses a
+global batch size of 32, a constant `5e-4` learning rate, and evaluates pass@256
+on all 128 evaluation mazes every 500 steps:
+
+```
+bash maze/sft_maze_23_100k.sh GPU_ID
+```
+
+After checkpoint 3,000 is available, the 23x23 MaxRL, GRPO, and RLOO launchers
+are `maze/maze_23_1024_{maxrl,grpo,rloo}.sh`. They retain the 4,096-trajectory
+generation and log-prob microbatches while splitting actor backward into two
+2,048-trajectory accumulation rounds.
+
 ### ImageNet experiments
 
 1. Install `hf-transfer` to be able to efficiently download the ImageNet-256x256 dataset.
