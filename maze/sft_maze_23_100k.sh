@@ -73,7 +73,7 @@ exec python3 "${REPO_ROOT}/maze/sft.py" \
   --eval_samples 128 \
   --n_samples_per_prompt 256 \
   --eval_temperature 1.0 \
-  --eval_max_new_tokens 256 \
+  --eval_max_new_tokens 64 \
   --project_name maze-sft-23x23 \
   --experiment_name constant-lr-5e-4-100k-3000steps \
   --use_wandb

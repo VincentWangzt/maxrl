@@ -91,7 +91,7 @@ exec python3 -m verl.trainer.main_ppo \
   "data.val_files=${VAL_DATA}" \
   data.train_batch_size=${TRAIN_BATCH_SIZE} \
   data.max_prompt_length=576 \
-  data.max_response_length=256 \
+  data.max_response_length=180 \
   data.apply_chat_template=False \
   "actor_rollout_ref.model.path=${MODEL_PATH}" \
   actor_rollout_ref.actor.optim.lr=${LR} \
