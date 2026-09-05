@@ -13,8 +13,8 @@ VAL_DATA="${REPO_ROOT}/maze/data/maze_17_1024/test.parquet"
 CHECKPOINT_DIR="${REPO_ROOT}/checkpoints"
 
 # Physical GPU assigned to this experiment. Ray sees it as logical GPU 0.
-GPU_IDS=(2)
-export CUDA_VISIBLE_DEVICES=2
+GPU_IDS=(9)
+export CUDA_VISIBLE_DEVICES=9
 
 # Mitigate allocator fragmentation from changing rollout sequence lengths.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
