@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Maze 17x17 512-sample RLOO Single-GPU Training Script
+# Maze 17x17 1,024-sample MaxRL Single-GPU Training Script
 
 set -euo pipefail
 
@@ -8,19 +8,19 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 MODEL_PATH="${REPO_ROOT}/maze/ckpt-1500"
-TRAIN_DATA="${REPO_ROOT}/maze/data/maze_17_512/train.parquet"
-VAL_DATA="${REPO_ROOT}/maze/data/maze_17_512/test.parquet"
+TRAIN_DATA="${REPO_ROOT}/maze/data/maze_17_1024/train.parquet"
+VAL_DATA="${REPO_ROOT}/maze/data/maze_17_1024/test.parquet"
 CHECKPOINT_DIR="${REPO_ROOT}/checkpoints"
 
 # Physical GPU assigned to this experiment. Ray sees it as logical GPU 0.
-GPU_IDS=(2)
-export CUDA_VISIBLE_DEVICES=2
+GPU_IDS=(0)
+export CUDA_VISIBLE_DEVICES=0
 
 # Mitigate allocator fragmentation from changing rollout sequence lengths.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Training hyperparameters
-ADVANTAGE_ESTIMATOR=rloo
+ADVANTAGE_ESTIMATOR=maxrl
 TRUNCATE_ORDER=64
 LR=5e-5
 N_ROLLOUTS=128
@@ -28,11 +28,11 @@ N_ROLLOUTS=128
 N_VAL=256
 # 32 prompts x 128 responses = one 4,096-trajectory batch on the single GPU.
 TRAIN_BATCH_SIZE=32
-# 512 prompts / 32 prompts per step = 16 steps per epoch.
-STEPS_PER_EPOCH=16
-TOTAL_EPOCHS=400
+# 1,024 prompts / 32 prompts per step = 32 steps per epoch.
+STEPS_PER_EPOCH=32
+TOTAL_EPOCHS=200
 
-PROJECT_NAME=maxrl-maze-512
+PROJECT_NAME=maxrl-maze-1024
 EXPERIMENT_NAME=${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts
 
 # ============ Ray Setup ============
@@ -118,8 +118,8 @@ exec python3 -m verl.trainer.main_ppo \
   trainer.val_before_train=True \
   trainer.n_gpus_per_node=1 \
   trainer.nnodes=1 \
-  trainer.save_freq=80 \
-  trainer.test_freq=80 \
+  trainer.save_freq=64 \
+  trainer.test_freq=64 \
   trainer.max_actor_ckpt_to_keep=300 \
   "trainer.default_local_dir=${CHECKPOINT_DIR}/${PROJECT_NAME}/${EXPERIMENT_NAME}" \
   trainer.total_epochs=${TOTAL_EPOCHS} \
