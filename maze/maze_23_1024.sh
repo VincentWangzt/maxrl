@@ -41,8 +41,8 @@ ACTOR_MICRO_BATCH_SIZE=2048
 STEPS_PER_EPOCH=32
 TOTAL_EPOCHS=200
 
-PROJECT_NAME=maxrl-maze-23-1024
-EXPERIMENT_NAME=${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts
+PROJECT_NAME=maze-23x23
+EXPERIMENT_NAME=1024-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts
 
 for required_path in "${VENV_DIR}/bin/activate" "${MODEL_PATH}" "${TRAIN_DATA}" "${VAL_DATA}"; do
   if [[ ! -e "${required_path}" ]]; then
