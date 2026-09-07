@@ -78,6 +78,12 @@ Evaluation uses 128 held-out mazes with 256 samples each, before training and
 every 64 steps; checkpoints are saved every 64 steps. `LR=1e-4` selects the
 alternate learning rate and gives it a separate run name.
 
+All SFT and RL launchers log to the W&B project `noisy_maze_maxrl_17x17`.
+Run names include the maze size and noise fraction; RL names also include the
+training set size, advantage estimator, rollout count, and learning rate. For example:
+`noisy_maze_17_noise_0.1_sft_100000-constant-lr-5e-4-3000steps` and
+`noisy_maze_17_noise_0.1_rl_2048-maxrl_128rollouts-lr_5e-5`.
+
 The custom scorer uses `verl`'s batch reward manager. The existing prime manager
 passes its callback through a spawn process pool, but the framework's custom
 reward loader returns a local closure that cannot be pickled. Batch scoring avoids

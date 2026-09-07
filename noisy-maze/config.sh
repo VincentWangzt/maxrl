@@ -4,6 +4,7 @@ EXPERIMENT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${EXPERIMENT_ROOT}/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
+PROJECT_NAME="noisy_maze_maxrl_17x17"
 MAZE_SIZE="${MAZE_SIZE:-17}"
 NOISE_FRACTION="${NOISE_FRACTION:-0.1}"
 if [[ ! "${NOISE_FRACTION}" =~ ^(0|1|0\.[0-9]*[1-9])$ ]]; then

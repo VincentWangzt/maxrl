@@ -74,6 +74,6 @@ exec python3 -m noisy_maze.sft \
   --eval_generation_batch_size 32 \
   --eval_temperature 1.0 \
   --eval_max_new_tokens "${MAX_RESPONSE_LENGTH}" \
-  --project_name "noisy-maze-sft-${MAZE_SIZE}x${MAZE_SIZE}" \
+  --project_name "${PROJECT_NAME}" \
   --experiment_name "${SFT_TITLE}-constant-lr-5e-4-3000steps" \
   --use_wandb

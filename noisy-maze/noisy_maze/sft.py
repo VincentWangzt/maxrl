@@ -619,7 +619,7 @@ def main():
     parser.add_argument("--eval_max_new_tokens", type=int, default=180, help="Maximum generated tokens per evaluation sample")
 
     # 日志参数
-    parser.add_argument("--project_name", type=str, default="noisy-maze-sft", help="Project name for logging")
+    parser.add_argument("--project_name", type=str, default="noisy_maze_maxrl_17x17", help="Project name for logging")
     parser.add_argument("--experiment_name", type=str, default="experiment", help="Experiment name")
     parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging")
 
