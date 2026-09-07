@@ -47,12 +47,12 @@ The generator creates four disjoint splits, deduplicated by the **real maze**:
 | --- | ---: |
 | SFT train | 100,000 |
 | SFT evaluation | 128 |
-| RL train | 2,048 |
+| RL train | 1,024 |
 | RL evaluation | 128 |
 
 At the defaults, dataset directories are
 `data/noisy_maze_17_noise_0.1_sft_100000` and
-`data/noisy_maze_17_noise_0.1_rl_2048`. Both contain metadata and file hashes.
+`data/noisy_maze_17_noise_0.1_rl_1024`. Both contain metadata and file hashes.
 These are fresh splits within this experiment; no exclusion check is made against
 the original experiment's corpus. Distinct real mazes can produce identical
 clouded observations, especially at high noise, so perfect pass@1 is not generally
@@ -72,7 +72,7 @@ and `metrics.jsonl`. The generation budget is 180 tokens for 17×17 and 256 for
 sequences raise an error instead of truncating the solution.
 
 RL starts from this variant's `ckpt-3000`, with 32 prompts per training step,
-128 rollouts per prompt, LR 5e-5, 200 epochs (12,800 steps), and no KL penalty.
+128 rollouts per prompt, LR 5e-5, 200 epochs (6,400 steps), and no KL penalty.
 MaxRL, GRPO, and RLOO share the existing script style and optimizer settings.
 Evaluation uses 128 held-out mazes with 256 samples each, before training and
 every 64 steps; checkpoints are saved every 64 steps. `LR=1e-4` selects the
@@ -82,7 +82,7 @@ All SFT and RL launchers log to the W&B project `noisy_maze_maxrl_17x17`.
 Run names include the maze size and noise fraction; RL names also include the
 training set size, advantage estimator, rollout count, and learning rate. For example:
 `noisy_maze_17_noise_0.1_sft_100000-constant-lr-5e-4-3000steps` and
-`noisy_maze_17_noise_0.1_rl_2048-maxrl_128rollouts-lr_5e-5`.
+`noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5`.
 
 The custom scorer uses `verl`'s batch reward manager. The existing prime manager
 passes its callback through a spawn process pool, but the framework's custom
@@ -108,6 +108,13 @@ that the GPU exists and is idle. SFT must finish before RL starts. They use the
 repository `.venv` and load W&B credentials from `.env`, like the existing scripts.
 Generated artifacts remain under `noisy-maze/`; dataset creation and SFT refuse
 to overwrite existing output directories.
+
+If the original 2,048-row RL dataset and SFT checkpoint already exist, run
+`bash noisy-maze/prepare_rl_subset.sh` before the RL launchers. This selects 1,024
+training rows with seed 1024, preserves their clouded observations and real mazes,
+and copies the original evaluation file byte for byte. Metadata retains source
+hashes and row indices. SFT data and checkpoints are reused. Fresh preparation with
+`prepare.sh` directly generates the current 1,024-row RL split instead.
 
 To change size or noise, pass the same settings to each stage:
 

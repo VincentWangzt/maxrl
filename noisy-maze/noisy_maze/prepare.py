@@ -24,7 +24,7 @@ class DatasetConfig:
     noise_seed: int = 71_202_609
     sft_train_count: int = 100_000
     sft_eval_count: int = 128
-    rl_train_count: int = 2_048
+    rl_train_count: int = 1_024
     rl_eval_count: int = 128
 
     @property
@@ -174,7 +174,7 @@ def main() -> None:
     parser.add_argument("--noise-seed", type=int, default=71_202_609)
     parser.add_argument("--sft-train-count", type=int, default=100_000)
     parser.add_argument("--sft-eval-count", type=int, default=128)
-    parser.add_argument("--rl-train-count", type=int, default=2_048)
+    parser.add_argument("--rl-train-count", type=int, default=1_024)
     parser.add_argument("--rl-eval-count", type=int, default=128)
     parser.add_argument("--output-root", type=Path, default=EXPERIMENT_ROOT / "data")
     args = vars(parser.parse_args())

@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
+from noisy_maze.curate import curate_subset
 from noisy_maze.generate_maze import MazeGenerator, connecting_positions, normalize_noise_fraction, obscure_observation
 from noisy_maze.prepare import DatasetConfig, generate_splits, make_rl_record, prepare_datasets, question_fingerprint
 from noisy_maze.reward import compute_optimal_length, compute_score, compute_scores, validate_solution
@@ -88,6 +89,24 @@ def test_dataset_files_and_metadata(tmp_path):
     assert json.loads((tmp_path / metadata["rl_title"] / "metadata.json").read_text()) == metadata
     with pytest.raises(FileExistsError):
         prepare_datasets(config, tmp_path)
+
+
+def test_curated_subset_preserves_observations_truth_and_evaluation(tmp_path):
+    config = DatasetConfig(size=9, sft_train_count=4, sft_eval_count=2, rl_train_count=8, rl_eval_count=2)
+    parent_metadata = prepare_datasets(config, tmp_path)
+    source_dir = tmp_path / parent_metadata["rl_title"]
+    result = curate_subset(source_dir, train_count=4, seed=1024)
+    output_dir = Path(result["output_dir"])
+    metadata = json.loads((output_dir / "metadata.json").read_text())
+    expected_indices = random.Random(1024).sample(range(8), 4)
+    assert metadata["selected_source_row_indices"] == expected_indices
+    assert pq.read_table(output_dir / "train.parquet").equals(pq.read_table(source_dir / "train.parquet").take(expected_indices))
+    assert (output_dir / "test.parquet").read_bytes() == (source_dir / "test.parquet").read_bytes()
+    assert result["train_rows"] == metadata["splits"]["rl_train"]["rows"] == 4
+    assert metadata["noise_fraction"] == 0.1
+    assert metadata["rl_title"].endswith("_rl_4")
+    with pytest.raises(FileExistsError):
+        curate_subset(source_dir, train_count=4, seed=1024)
 
 
 def test_true_maze_reward_rejects_hidden_wall_and_invalid_responses(hidden_wall_item):

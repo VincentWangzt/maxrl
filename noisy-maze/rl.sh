@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared single-GPU launcher for the independent 2,048-sample noisy-maze RL comparison.
+# Shared single-GPU launcher for the independent 1,024-sample noisy-maze RL comparison.
 
 set -euo pipefail
 
@@ -34,8 +34,8 @@ N_ROLLOUTS=128
 N_VAL=256
 # 32 prompts x 128 responses = one 4,096-trajectory optimizer batch.
 TRAIN_BATCH_SIZE=32
-# 2,048 prompts / 32 prompts per step = 64 steps per epoch.
-STEPS_PER_EPOCH=64
+# 1,024 prompts / 32 prompts per step = 32 steps per epoch.
+STEPS_PER_EPOCH=$((RL_TRAIN_COUNT / TRAIN_BATCH_SIZE))
 TOTAL_EPOCHS=200
 
 EXPERIMENT_NAME="${RL_TITLE}-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts-lr_${LR}"
