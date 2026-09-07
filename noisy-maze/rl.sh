@@ -20,7 +20,7 @@ esac
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
-MODEL_PATH="${SFT_OUTPUT_DIR}/ckpt-3000"
+MODEL_PATH="${SFT_OUTPUT_DIR}/ckpt-${SFT_MAX_STEPS}"
 TRAIN_DATA="${RL_DATA_DIR}/train.parquet"
 VAL_DATA="${RL_DATA_DIR}/test.parquet"
 CHECKPOINT_DIR="${EXPERIMENT_ROOT}/checkpoints/rl"
@@ -38,7 +38,7 @@ TRAIN_BATCH_SIZE=32
 STEPS_PER_EPOCH=$((RL_TRAIN_COUNT / TRAIN_BATCH_SIZE))
 TOTAL_EPOCHS=200
 
-EXPERIMENT_NAME="${RL_TITLE}-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts-lr_${LR}"
+EXPERIMENT_NAME="${RL_TITLE}-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts-lr_${LR}-sft_${SFT_MAX_STEPS}steps"
 
 for required_path in "${VENV_DIR}/bin/activate" "${MODEL_PATH}" "${TRAIN_DATA}" "${VAL_DATA}"; do
   if [[ ! -e "${required_path}" ]]; then

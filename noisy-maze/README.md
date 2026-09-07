@@ -58,10 +58,17 @@ the original experiment's corpus. Distinct real mazes can produce identical
 clouded observations, especially at high noise, so perfect pass@1 is not generally
 an attainable target.
 
-SFT uses batch size **32**, microbatch size 8, **3,000 optimizer steps**, and
+SFT uses batch size **32**, microbatch size 8, **6,000 optimizer steps**, and
 **AdamW at constant LR 5e-4**, betas `(0.9, 0.95)`, weight decay 0.01, and no
 warmup. The copied Qwen2 architecture has hidden size 256, four layers, four
 attention heads, two KV heads, and intermediate size 1,024.
+
+The 6,000-step run allows two epochs over the 100,000 training examples and stops
+at step 6,000. Its checkpoints live in
+`checkpoints/noisy_maze_17_noise_0.1_sft_100000_6000steps`, preserving the earlier
+3,000-step run in its original directory. The RL launcher uses the new run's
+`ckpt-6000` after SFT finishes. RL run names also include the SFT step count so
+automatic checkpoint resume cannot pick up an older run trained from `ckpt-3000`.
 
 Every **500 steps**, save a checkpoint, compute validation loss, and sample
 **256 solutions per evaluation maze** at temperature 1.0. Generation batches
@@ -71,7 +78,7 @@ and `metrics.jsonl`. The generation budget is 180 tokens for 17×17 and 256 for
 23×23; each covers every simple solution in that maze size. Overlength SFT
 sequences raise an error instead of truncating the solution.
 
-RL starts from this variant's `ckpt-3000`, with 32 prompts per training step,
+RL starts from this variant's `ckpt-6000`, with 32 prompts per training step,
 128 rollouts per prompt, LR 5e-5, 200 epochs (6,400 steps), and no KL penalty.
 MaxRL, GRPO, and RLOO share the existing script style and optimizer settings.
 Evaluation uses 128 held-out mazes with 256 samples each, before training and
@@ -81,8 +88,8 @@ alternate learning rate and gives it a separate run name.
 All SFT and RL launchers log to the W&B project `noisy_maze_maxrl_17x17`.
 Run names include the maze size and noise fraction; RL names also include the
 training set size, advantage estimator, rollout count, and learning rate. For example:
-`noisy_maze_17_noise_0.1_sft_100000-constant-lr-5e-4-3000steps` and
-`noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5`.
+`noisy_maze_17_noise_0.1_sft_100000-constant-lr-5e-4-6000steps` and
+`noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5-sft_6000steps`.
 
 The custom scorer uses `verl`'s batch reward manager. The existing prime manager
 passes its callback through a spawn process pool, but the framework's custom

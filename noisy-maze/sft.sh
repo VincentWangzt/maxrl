@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Train the noisy-maze model for exactly 3,000 optimizer steps.
+# Train the noisy-maze model for exactly 6,000 optimizer steps.
 
 set -euo pipefail
 
@@ -63,8 +63,8 @@ exec python3 -m noisy_maze.sft \
   --micro_batch_size 8 \
   --learning_rate 5e-4 \
   --lr_scheduler constant \
-  --num_epochs 1 \
-  --max_steps 3000 \
+  --num_epochs 2 \
+  --max_steps "${SFT_MAX_STEPS}" \
   --max_length "${MAX_LENGTH}" \
   --save_steps 500 \
   --eval_steps 500 \
@@ -75,5 +75,5 @@ exec python3 -m noisy_maze.sft \
   --eval_temperature 1.0 \
   --eval_max_new_tokens "${MAX_RESPONSE_LENGTH}" \
   --project_name "${PROJECT_NAME}" \
-  --experiment_name "${SFT_TITLE}-constant-lr-5e-4-3000steps" \
+  --experiment_name "${SFT_TITLE}-constant-lr-5e-4-${SFT_MAX_STEPS}steps" \
   --use_wandb
