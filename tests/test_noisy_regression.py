@@ -47,7 +47,7 @@ from noisy_regression.model import (
     teacher_forced_nll,
 )
 from noisy_regression.references import bayesian_predictive, gaussian_bin_log_probs, reference_distributions
-from noisy_regression.tracking import TrackingConfig
+from noisy_regression.tracking import TrackingConfig, event_metrics
 from noisy_regression.train import TrainConfig, load_checkpoint, optimize_step, save_checkpoint, train
 from scipy.stats import binom
 
@@ -422,18 +422,70 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.1
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
+    assert init_arguments["config"]["dashboard_schema_version"] == 2
+    assert init_arguments["config"]["dashboard_pass_k"] == [1, 16, 256]
+    assert init_arguments["config"]["train_evaluation_prompts"] == 4
+    assert init_arguments["config"]["periodic_generation_prompts"] == 2
+    assert init_arguments["config"]["final_generation_prompts"] == 4
     assert [step for step, _ in recorded_run.history] == [0, 1, 2]
+    events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
+    evaluations = {event["step"]: event for event in events if event["kind"] == "evaluation"}
+    references = json.loads((tmp_path / "run" / "references.json").read_text())
     for step, values in recorded_run.history:
-        assert "eval/answer_nll" in values and "train_eval/answer_nll" in values
-        assert "eval/exact_pass@1" in values and "eval/generation/generative_pass@256" in values
-        assert "eval/generation/generative_pass@256/conditional_sampling_sd_of_mean" in values
-        assert "eval/generation/sampled_mean_mse" in values
-        assert "eval/generation/sampled_mean_mse/prompt_se" in values
-        assert values["eval/generation/sampled_mean_mse/prompts"] == (4 if step == 2 else 2)
-        assert "reference/uniform_256/answer_nll" in values
-        assert not any("first_token_nll" in name or "second_token_conditional_nll" in name for name in values)
-        assert not any("example_ids" in name for name in values)
+        evaluation = evaluations[step]["eval"]
+        assert values["likelihood/eval_answer_nll"] == evaluation["answer_nll"]["mean"]
+        assert values["likelihood/train_answer_nll"] == evaluations[step]["train"]["answer_nll"]["mean"]
+        assert (
+            values["regression/model_signal_mse"]
+            == evaluation["predictive_mean_errors"]["continuous_noiseless_signal"]["mse"]["mean"]
+        )
+        assert values["regression/sampled_signal_mse_256"] == evaluation["generation"]["sampled_mean_mse"]["mean"]
+        assert values["progress/generation_prompts"] == (4 if step == 2 else 2)
+        assert {key for key in values if key.startswith("pass_")} == {
+            f"{group}/pass@{k}" for group in ("pass_exact", "pass_sampled") for k in (1, 16, 256)
+        }
+        for k in (1, 16, 256):
+            assert values[f"pass_exact/pass@{k}"] == evaluation["exact_pass"][str(k)]["mean"]
+            assert values[f"pass_sampled/pass@{k}"] == evaluation["generation"]["generative_pass"][str(k)]["mean"]
+        for label, source in (
+            ("query_only", "query_only_decoded_plugin_approximation"),
+            ("ridge_quantized", "ridge_decoded_gaussian_approximation"),
+            ("bayes_continuous", "bayesian_continuous_optimistic"),
+        ):
+            assert values[f"likelihood/{label}_answer_nll"] == references[source]["answer_nll"]["mean"]
+            assert (
+                values[f"regression/{label}_signal_mse"]
+                == references[source]["predictive_mean_errors"]["continuous_noiseless_signal"]["mse"]["mean"]
+            )
+        assert [key for key in values if "prompts" in key] == ["progress/generation_prompts"]
+        assert not any(
+            unwanted in key
+            for key in values
+            for unwanted in ("prompt_se", "normal95", "sampling_sd", "example_ids", "noisy_outcome", "grid_value")
+        )
+        assert not any(key.startswith(("reference/", "eval/", "train_eval/", "trainer/")) for key in values)
+        assert len(values) == (21 if step == 0 else 25 if step == 2 else 24)
+        if step == 2:
+            assert values["diagnostics/context_shuffle_nll_increase"] == pytest.approx(
+                evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
+            )
+        else:
+            assert "diagnostics/context_shuffle_nll_increase" not in values
         if step:
-            assert "train/answer_nll" in values and "train/learning_rate" in values
-    assert recorded_run.finished and recorded_run.summary["result/presentations"] == 8
+            assert "train/batch_answer_nll" in values and "train/learning_rate" in values
+    # New numeric artifact diagnostics must never silently become dashboard panels.
+    final_event = evaluations[2]
+    curated = event_metrics(final_event)
+    final_event["eval"]["future_diagnostic"] = {"mean": 123, "prompts": 4}
+    assert event_metrics(final_event) == curated
+    assert "prompt_se" in final_event["eval"]["generation"]["sampled_mean_mse"]
+    assert len(final_event["eval"]["exact_pass"]) == 9
+    assert len(references) == 5
+    assert recorded_run.finished
+    assert recorded_run.summary == {
+        "result/best_answer_nll": summary["best"]["answer_nll"],
+        "result/best_step": summary["best"]["step"],
+        "result/best_checkpoint": summary["best"]["checkpoint"],
+        "result/final_checkpoint": summary["final_checkpoint"],
+    }
     assert json.loads((tmp_path / "run" / "wandb_run.json").read_text())["id"] == recorded_run.id

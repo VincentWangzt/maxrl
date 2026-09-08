@@ -1,9 +1,17 @@
-"""W&B scalar logging with one committed history row per optimizer step."""
+"""Curated W&B curves; full evaluation diagnostics stay in JSON/NPZ artifacts."""
 
 from dataclasses import dataclass
-from numbers import Real
 
 from noisy_regression.data import write_json
+
+DASHBOARD_KS = (1, 16, 256)
+# One no-context baseline, one approximation with the model's input precision,
+# and one optimistic continuous-data benchmark. All five remain in references.json.
+DASHBOARD_REFERENCES = {
+    "query_only": "query_only_decoded_plugin_approximation",
+    "ridge_quantized": "ridge_decoded_gaussian_approximation",
+    "bayes_continuous": "bayesian_continuous_optimistic",
+}
 
 
 @dataclass(frozen=True)
@@ -13,37 +21,56 @@ class TrackingConfig:
     experiment_name: str
 
 
-def flatten_metrics(values, prefix=""):
-    result = {}
-    for name, value in values.items():
-        key = f"{prefix}/{name}" if prefix else name
-        if isinstance(value, dict):
-            if name in {"exact_pass", "generative_pass", "exact_pass_same_subset", "sampled_minus_exact"}:
-                for k, metrics in value.items():
-                    result.update(flatten_metrics(metrics, f"{key}@{k}"))
-            else:
-                result.update(flatten_metrics(value, key))
-        elif isinstance(value, Real) and not isinstance(value, bool):
-            result[prefix if name == "mean" else key] = value
-        elif name == "prompt_normal95":
-            result[f"{prefix}/prompt_normal95_low"], result[f"{prefix}/prompt_normal95_high"] = value
-        # IDs, labels, paths, and configuration arrays belong in local artifacts,
-        # not scalar histories. In particular, do not log example IDs as metrics.
-    return result
+def reference_metrics(references):
+    """Six baseline curves grouped beside the model metrics they explain."""
+    metrics = {}
+    for label, name in DASHBOARD_REFERENCES.items():
+        reference = references[name]
+        metrics[f"likelihood/{label}_answer_nll"] = reference["answer_nll"]["mean"]
+        metrics[f"regression/{label}_signal_mse"] = reference["predictive_mean_errors"]["continuous_noiseless_signal"][
+            "mse"
+        ]["mean"]
+    return metrics
 
 
 def event_metrics(event):
     metrics = {
-        "trainer/global_step": event["step"],
-        "trainer/presentations": event["presentations"],
-        "trainer/elapsed_seconds": event["elapsed_seconds"],
+        "progress/optimizer_step": event["step"],
+        "progress/training_examples_seen": event["presentations"],
+        "progress/elapsed_seconds": event["elapsed_seconds"],
     }
     if event["kind"] == "optimization":
         metrics.update(
-            {f"train/{name}": event[name] for name in ("answer_nll", "gradient_norm_before_clip", "learning_rate")}
+            {
+                "train/batch_answer_nll": event["answer_nll"],
+                "train/gradient_norm_before_clip": event["gradient_norm_before_clip"],
+                "train/learning_rate": event["learning_rate"],
+            }
         )
     elif event["kind"] == "evaluation":
-        metrics.update(flatten_metrics({"train_eval": event["train"], "eval": event["eval"]}))
+        evaluation = event["eval"]
+        generation = evaluation["generation"]
+        metrics.update(
+            {
+                "likelihood/eval_answer_nll": evaluation["answer_nll"]["mean"],
+                "likelihood/train_answer_nll": event["train"]["answer_nll"]["mean"],
+                "regression/model_signal_mse": evaluation["predictive_mean_errors"]["continuous_noiseless_signal"][
+                    "mse"
+                ]["mean"],
+                "regression/sampled_signal_mse_256": generation["sampled_mean_mse"]["mean"],
+                "diagnostics/predictive_entropy_nats": evaluation["entropy_nats_per_answer"]["mean"],
+                # This is the only changing evaluation-size counter: the final
+                # generation event expands from the fixed subset to the full pool.
+                "progress/generation_prompts": generation["prompts"],
+            }
+        )
+        for k in DASHBOARD_KS:
+            metrics[f"pass_exact/pass@{k}"] = evaluation["exact_pass"][str(k)]["mean"]
+            metrics[f"pass_sampled/pass@{k}"] = generation["generative_pass"][str(k)]["mean"]
+        if "mismatched_context_control" in evaluation:
+            metrics["diagnostics/context_shuffle_nll_increase"] = (
+                evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
+            )
     else:
         raise ValueError(f"Unknown metric event kind: {event['kind']}")
     return metrics
@@ -52,7 +79,7 @@ def event_metrics(event):
 class WandbLogger:
     def __init__(self, run, references):
         self.run = run
-        self.references = flatten_metrics({"reference": references})
+        self.references = reference_metrics(references)
         self.pending_step = None
         self.pending_metrics = {}
 
@@ -75,7 +102,14 @@ class WandbLogger:
 
     def finish(self, summary):
         self.flush()
-        self.run.summary.update(flatten_metrics({"result": summary}))
+        self.run.summary.update(
+            {
+                "result/best_answer_nll": summary["best"]["answer_nll"],
+                "result/best_step": summary["best"]["step"],
+                "result/best_checkpoint": summary["best"]["checkpoint"],
+                "result/final_checkpoint": summary["final_checkpoint"],
+            }
+        )
         self.run.finish()
 
 
@@ -102,6 +136,12 @@ def initialize_tracking(config, output_path, manifest, metadata, references):
             "resume_from": manifest["resume_from"],
             "dataset": metadata["config"],
             "dataset_hashes": {split: item["content_sha256"] for split, item in metadata["splits"].items()},
+            "dashboard_schema_version": 2,
+            "dashboard_pass_k": list(DASHBOARD_KS),
+            "dashboard_references": DASHBOARD_REFERENCES,
+            "train_evaluation_prompts": len(manifest["train_evaluation_ids"]),
+            "periodic_generation_prompts": len(manifest["periodic_generation_ids"]),
+            "final_generation_prompts": metadata["config"]["eval_count"],
         },
     )
     write_json(

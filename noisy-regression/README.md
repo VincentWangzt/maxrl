@@ -6,6 +6,8 @@ maze tokenizer, rewards, or datasets. All Python execution is on
 
 The completed first run and reference comparisons are documented in [RESULTS.md](RESULTS.md).
 Metric definitions, normalization choices and a detailed evaluation audit are in [EVALUATION.md](EVALUATION.md).
+For the target/reference explanation and the compact dashboard layout, start
+with [METRICS.md](METRICS.md).
 
 ## Experiment settings
 
@@ -87,10 +89,12 @@ local logging. No restart or second training run is triggered by editing the
 launchers. `evaluate.sh` targets the current `bs64x1_sigma0p1` run name; select the
 original checkpoint explicitly to reevaluate the first run.
 
-W&B records configuration, dataset hashes, training loss/LR/gradient norm,
-fixed-subset training NLL, held-out likelihood, separately named exact and
-generated pass@k, uncertainty, diagnostics and reference curves. Optimization
-and evaluation events at the same step are combined into one history row;
+W&B records configuration and dataset hashes, with 25 curated history keys in
+`regression`, `likelihood`, `pass_exact`, `pass_sampled`, `train`, `diagnostics`,
+and `progress`. The dashboard keeps signal MSE, answer NLL, pass@1/16/256 and six
+reference curves; uncertainty, redundant target errors and per-metric counts
+remain in local artifacts. See [METRICS.md](METRICS.md) for the full mapping.
+Optimization and evaluation events at the same step are combined into one history row;
 that row is flushed at the next logged step or at completion. This avoids W&B
 discarding an evaluation after an already committed training step. The run ID
 and URL are saved in `wandb_run.json`. A resumed training invocation starts a
@@ -135,9 +139,10 @@ squares the difference from the stored **continuous noiseless signal**
 generated prompts (128 at periodic evaluations, all 1,024 at the final step),
 with prompt SE and an approximate 95% interval. It uses the same completions as
 pass@k. It is distinct from the exact-distribution predictive-mean MSE below:
-the sample mean retains finite-sampling variability. W&B logs the scalar as
-`eval/generation/sampled_mean_mse` and its uncertainty beneath
-the same key; checkpoint metrics, JSONL and the generated report include it too.
+the sample mean retains finite-sampling variability. W&B logs only the mean as
+`regression/sampled_signal_mse_256`; checkpoint metrics, JSONL and the generated
+report retain its uncertainty. The exact full-pool curve is
+`regression/model_signal_mse`.
 The logged value remains raw MSE. The noiseless signal's population variance is
 already 1 under this experiment's prior, so normalizing by it changes nothing.
 The detailed evaluation report also compares MSE with always predicting zero on

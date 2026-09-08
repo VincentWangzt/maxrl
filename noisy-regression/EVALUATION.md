@@ -348,6 +348,11 @@ frozen pool. These checks do not create an independent test split.
 
 ## 7. Uncertainty, logging, and limits
 
+The uncertainty fields below remain in JSON/NPZ artifacts and detailed offline
+reports. The current W&B dashboard uses an explicit 25-key selection without
+SEs, intervals or per-metric counts. See [METRICS.md](METRICS.md) for the current
+layout, target/reference explanations, and the audit of the old 827-key history.
+
 For any per-prompt metric vector, `prompt_se` is its sample standard deviation
 (ddof=1) divided by the square root of prompt count. `prompt_normal95` is
 mean ± 1.96 SE. These are approximate intervals; checkpoint comparisons share
@@ -366,7 +371,10 @@ in the realized sampled estimator across prompts but is not a separately
 estimated conditional Monte Carlo SD. None of these uncertainties includes
 training-seed variability or corrects for checkpoint selection.
 
-| Local event field | W&B scalar key |
+The following mapping describes the **historical** recursive W&B logger. It
+helps read existing runs; new logger instances use the schema in METRICS.md.
+
+| Local event field | Historical W&B scalar key |
 |---|---|
 | `eval.answer_nll.mean` | `eval/answer_nll` |
 | `eval.exact_pass[k].mean` | `eval/exact_pass@k` |
