@@ -5,6 +5,7 @@ maze tokenizer, rewards, or datasets. All Python execution is on
 `cmu-L40-live:~/maxrl`; local work is editing, Git and Ruff only.
 
 The completed first run and reference comparisons are documented in [RESULTS.md](RESULTS.md).
+Metric definitions, normalization choices and a detailed evaluation audit are in [EVALUATION.md](EVALUATION.md).
 
 ## Confirmed first experiment
 
@@ -117,7 +118,7 @@ Temperature is 1, without truncation or beams; output length is exactly 2.
 CPU prompt batches when sampling those distributions. The complete samples,
 IDs, success counts and joint log-probability tables are saved.
 
-`generation.sampled_mean_noiseless_signal_mse` decodes each of a prompt's 256
+`generation.sampled_mean_mse` decodes each of a prompt's 256
 sampled predictions to its scalar grid center, averages those predictions, then
 squares the difference from the stored **continuous noiseless signal**
 `query_signal = w·x_query`. The metric averages these squared errors across
@@ -125,8 +126,12 @@ generated prompts (128 at periodic evaluations, all 1,024 at the final step),
 with prompt SE and an approximate 95% interval. It uses the same completions as
 pass@k. It is distinct from the exact-distribution predictive-mean MSE below:
 the sample mean retains finite-sampling variability. W&B logs the scalar as
-`eval/generation/sampled_mean_noiseless_signal_mse` and its uncertainty beneath
+`eval/generation/sampled_mean_mse` and its uncertainty beneath
 the same key; checkpoint metrics, JSONL and the generated report include it too.
+The logged value remains raw MSE. The noiseless signal's population variance is
+already 1 under this experiment's prior, so normalizing by it changes nothing.
+The detailed evaluation report also compares MSE with always predicting zero on
+the same prompts; those derived ratios are not additional W&B metrics.
 
 Exact and generated metrics are compared on the same selected prompts. Prompt
 standard errors and approximate normal intervals use examples as units;

@@ -1,5 +1,8 @@
 # First fixed-pool SFT run — completed
 
+Definitions of all evaluation metrics, normalization choices, and a detailed
+interpretation are in [EVALUATION.md](EVALUATION.md).
+
 The original run completed **10,000 optimizer steps, 640,000 example presentations,
 and 6.4 passes** through the fixed training pool in **2,489.97 seconds (41.50 minutes)**.
 The scratch Qwen2 model has **988,032 trainable parameters**. Training used GPU 1
@@ -85,7 +88,7 @@ This metric was added after training in commit `00b136c` and computed for all
 21 evaluations using their original saved completions, without new sampling.
 Periodic steps use their original 128-prompt generation subset; the final step
 uses all 1,024 prompts. JSONL and checkpoint metrics now include
-`eval.generation.sampled_mean_noiseless_signal_mse`; the backfill history and
+`eval.generation.sampled_mean_mse`; the backfill history and
 provenance are recorded in `sampled_mean_mse_backfill.json`. The original metrics
 are retained on the server in `metrics_before_sampled_mean_mse/`.
 

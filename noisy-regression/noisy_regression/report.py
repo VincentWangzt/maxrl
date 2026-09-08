@@ -58,7 +58,7 @@ def render_report(run):
     plt.close(fig)
     fig, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
     generation = final["eval"]["generation"]
-    sampled_mean_mse = generation["sampled_mean_noiseless_signal_mse"]
+    sampled_mean_mse = generation["sampled_mean_mse"]
     generation_references = references
     if generation["prompts"] < metadata["config"]["eval_count"]:
         # Reference overlays use precisely the same tasks as sampled curves,

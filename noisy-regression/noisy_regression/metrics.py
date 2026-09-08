@@ -69,7 +69,7 @@ def sampled_summary(counts, target_probs, n):
     return result
 
 
-def sampled_mean_noiseless_signal_mse(completions, noiseless_signal):
+def sampled_mean_mse(completions, noiseless_signal):
     """Decode 256 samples per prompt, average them, then score against w·x_query."""
     completions = np.asarray(completions)
     noiseless_signal = np.asarray(noiseless_signal, dtype=np.float64)

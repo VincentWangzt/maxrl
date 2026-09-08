@@ -31,7 +31,7 @@ from noisy_regression.metrics import (
     distribution_summary,
     estimated_pass,
     exact_pass,
-    sampled_mean_noiseless_signal_mse,
+    sampled_mean_mse,
     sampled_summary,
 )
 from noisy_regression.model import (
@@ -245,7 +245,7 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
     completions = np.full((2, 256, 2), 15, dtype=np.uint8)
     completions[0, :128] = 0  # Half -5, half +5: mean 0, despite sample variance 25.
     signals = np.array([1.0, 2.0])  # Continuous signals, without quantization or query noise.
-    result = sampled_mean_noiseless_signal_mse(completions, signals)
+    result = sampled_mean_mse(completions, signals)
     # Per-prompt squared errors: (0-1)^2 = 1 and (5-2)^2 = 9.
     assert result["mean"] == pytest.approx(5)
     assert result["prompt_se"] == pytest.approx(4)
@@ -257,10 +257,10 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
         (completions[:0], signals[:0]),
     ):
         with pytest.raises(ValueError, match="256"):
-            sampled_mean_noiseless_signal_mse(samples, targets)
+            sampled_mean_mse(samples, targets)
     completions[0, 0, 0] = 16
     with pytest.raises(ValueError, match="digit IDs"):
-        sampled_mean_noiseless_signal_mse(completions, signals)
+        sampled_mean_mse(completions, signals)
 
 
 def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
@@ -325,7 +325,7 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
         with np.load(tmp_path / "run" / f"evaluation-{event['step']:05d}.npz") as archive:
             selected_signal = pools["eval"]["query_signal"][archive["generation_indices"]]
             per_prompt_errors = (decode(archive["completions"]).mean(axis=1) - selected_signal) ** 2
-        mse = event["eval"]["generation"]["sampled_mean_noiseless_signal_mse"]
+        mse = event["eval"]["generation"]["sampled_mean_mse"]
         assert mse["mean"] == pytest.approx(per_prompt_errors.mean())
         assert mse["prompts"] == len(selected_signal)
     before = array_hash(pools["eval"])
@@ -392,9 +392,9 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
         assert "eval/answer_nll" in values and "train_eval/answer_nll" in values
         assert "eval/exact_pass@1" in values and "eval/generation/generative_pass@256" in values
         assert "eval/generation/generative_pass@256/conditional_sampling_sd_of_mean" in values
-        assert "eval/generation/sampled_mean_noiseless_signal_mse" in values
-        assert "eval/generation/sampled_mean_noiseless_signal_mse/prompt_se" in values
-        assert values["eval/generation/sampled_mean_noiseless_signal_mse/prompts"] == (4 if step == 2 else 2)
+        assert "eval/generation/sampled_mean_mse" in values
+        assert "eval/generation/sampled_mean_mse/prompt_se" in values
+        assert values["eval/generation/sampled_mean_mse/prompts"] == (4 if step == 2 else 2)
         assert "reference/uniform_256/answer_nll" in values
         assert not any("example_ids" in name for name in values)
         if step:
