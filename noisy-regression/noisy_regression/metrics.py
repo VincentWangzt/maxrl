@@ -3,7 +3,7 @@
 import numpy as np
 from scipy.stats import binom
 
-from noisy_regression.codec import CENTERS, decode
+from noisy_regression.codec import CENTERS, decode, quantize
 
 KS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
@@ -96,14 +96,19 @@ def distribution_summary(log_probs, arrays):
     target_indices = 16 * targets[:, 0] + targets[:, 1]
     rows = np.arange(len(targets))
     target_ll = log_probs[rows, target_indices]
+    # Clean likelihood/pass score the quantized signal under the SAME model
+    # distribution. MSE below keeps both clean and noisy targets continuous.
+    clean_target_ll = log_probs[rows, quantize(arrays["query_signal"])]
     predictive_mean = probs @ CENTERS
     result = {
         "prompts": len(targets),
         "answer_nll": mean_se(-target_ll),
+        "clean_answer_nll": mean_se(-clean_target_ll),
         "answer_log_likelihood": mean_se(target_ll),
         "entropy_nats_per_answer": mean_se(-(probs * log_probs).sum(1)),
         "max_normalization_error": normalization_error,
         "exact_pass": {str(k): mean_se(exact_pass(np.exp(target_ll), k)) for k in KS},
+        "clean_exact_pass": {str(k): mean_se(exact_pass(np.exp(clean_target_ll), k)) for k in KS},
         "predictive_mean_errors": {},
     }
     for name, target in (

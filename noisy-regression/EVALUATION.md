@@ -349,8 +349,10 @@ frozen pool. These checks do not create an independent test split.
 ## 7. Uncertainty, logging, and limits
 
 The uncertainty fields below remain in JSON/NPZ artifacts and detailed offline
-reports. The current W&B dashboard uses an explicit 25-key selection without
-SEs, intervals or per-metric counts. See [METRICS.md](METRICS.md) for the current
+reports. The current W&B dashboard uses an explicit 22-key training selection
+with clean/noisy scores from exact distributions, without SEs, intervals,
+sampled scores or per-metric counts. Baselines log once in their own runs under
+the same metric names. See [METRICS.md](METRICS.md) for the current
 layout, target/reference explanations, and the audit of the old 827-key history.
 
 For any per-prompt metric vector, `prompt_se` is its sample standard deviation

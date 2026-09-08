@@ -89,11 +89,16 @@ local logging. No restart or second training run is triggered by editing the
 launchers. `evaluate.sh` targets the current `bs64x1_sigma0p1` run name; select the
 original checkpoint explicitly to reevaluate the first run.
 
-W&B records configuration and dataset hashes, with 25 curated history keys in
-`regression`, `likelihood`, `pass_exact`, `pass_sampled`, `train`, `diagnostics`,
-and `progress`. The dashboard keeps signal MSE, answer NLL, pass@1/16/256 and six
-reference curves; uncertainty, redundant target errors and per-metric counts
-remain in local artifacts. See [METRICS.md](METRICS.md) for the full mapping.
+W&B records configuration and dataset hashes, with 22 curated training-history
+keys in `eval`, `pass@k_exact`, `train`, `diagnostics`, and `timing`. MSE and NLL
+use `eval/{mse,nll}/{clean,noisy}`; exact pass uses
+`pass@k_exact/pass@{1,4,16,64,256}/{clean,noisy}`. All use the full held-out
+distribution, with no sampled scores, train-eval panels or progress section.
+Bayesian and ridge have separate one-time runs with the same evaluation keys:
+`bash noisy-regression/evaluate_bayesian.sh` and
+`bash noisy-regression/evaluate_ridge.sh` on the server. Both run on CPU and
+log once at step zero in the same project. They require fresh output directories.
+See [METRICS.md](METRICS.md) for definitions and the full mapping.
 Optimization and evaluation events at the same step are combined into one history row;
 that row is flushed at the next logged step or at completion. This avoids W&B
 discarding an evaluation after an already committed training step. The run ID
@@ -119,7 +124,12 @@ the logits at positions 202 and 203 predicting target positions 203 and 204
 (zero-based). Both softmaxes contain only digit IDs 0–15; Hugging Face's
 unrestricted, internally shifted loss is not used.
 
-`exact_pass[k]` is the prompt average of `1-(1-p_target)^k`, evaluated stably.
+`exact_pass[k]` is the prompt average of `1-(1-p_target)^k`, evaluated stably,
+for the noisy target tokens. `clean_exact_pass[k]` instead scores the tokens
+obtained by quantizing `query_signal`. `answer_nll` and `clean_answer_nll`
+likewise score the noisy and clean tokens under the same model distribution.
+Dashboard MSE uses that distribution's exact mean against each continuous target.
+The following sampling measurements are retained only in offline artifacts.
 `generation.generative_pass[k]` is the combinatorial estimator from 256 actual
 independent digit-pair completions per prompt, for
 `k = 1,2,4,8,16,32,64,128,256`. Periodic generation uses a fixed 128-example
@@ -139,10 +149,10 @@ squares the difference from the stored **continuous noiseless signal**
 generated prompts (128 at periodic evaluations, all 1,024 at the final step),
 with prompt SE and an approximate 95% interval. It uses the same completions as
 pass@k. It is distinct from the exact-distribution predictive-mean MSE below:
-the sample mean retains finite-sampling variability. W&B logs only the mean as
-`regression/sampled_signal_mse_256`; checkpoint metrics, JSONL and the generated
-report retain its uncertainty. The exact full-pool curve is
-`regression/model_signal_mse`.
+the sample mean retains finite-sampling variability. This sampled metric stays
+in checkpoint metrics, JSONL and the generated report, with its uncertainty.
+The dashboard logs only exact full-pool MSE, under `eval/mse/clean` and
+`eval/mse/noisy`.
 The logged value remains raw MSE. The noiseless signal's population variance is
 already 1 under this experiment's prior, so normalizing by it changes nothing.
 The detailed evaluation report also compares MSE with always predicting zero on

@@ -27,6 +27,7 @@ from noisy_regression.codec import (
 )
 from noisy_regression.data import DatasetConfig, FrozenOrder, array_hash, generate_split, load_pool, prepare
 from noisy_regression.evaluate import evaluate
+from noisy_regression.evaluate_baseline import evaluate_baseline
 from noisy_regression.metrics import (
     distribution_summary,
     estimated_pass,
@@ -270,6 +271,45 @@ def test_reference_normalization_and_analytic_cases(arrays):
         if name == "uniform_256":
             assert report["answer_nll"]["mean"] == pytest.approx(math.log(256))
             assert report["exact_pass"]["1"]["mean"] == pytest.approx(1 / 256)
+            assert report["clean_answer_nll"]["mean"] == pytest.approx(math.log(256))
+            assert report["clean_exact_pass"]["1"]["mean"] == pytest.approx(1 / 256)
+
+
+def test_clean_and_noisy_metrics_use_exact_distribution_and_distinct_targets(arrays):
+    selected = {name: values[:2].copy() for name, values in arrays.items()}
+    selected["query_signal"] = np.array([1.2, -6.0])
+    selected["query_y"] = np.array([1.3, 6.0])
+    selected["tokens"][:, -2:] = encode(selected["query_y"])
+    clean_indices = quantize(selected["query_signal"])
+    noisy_indices = quantize(selected["query_y"])
+    clean_p = np.array([0.2, 0.6])
+    noisy_p = np.array([0.5, 0.1])
+    probabilities = np.full((2, 256), 0.3 / 254)
+    probabilities[np.arange(2), clean_indices] = clean_p
+    probabilities[np.arange(2), noisy_indices] = noisy_p
+    report = distribution_summary(np.log(probabilities), selected)
+    # This event deliberately has no samples, train subset, or progress counters.
+    values = event_metrics(
+        {
+            "kind": "evaluation",
+            "step": 0,
+            "elapsed_seconds": 2.0,
+            "evaluation_seconds": 1.0,
+            "eval": report,
+        }
+    )
+    assert values["eval/nll/clean"] == pytest.approx(-np.log(clean_p).mean())
+    assert values["eval/nll/noisy"] == pytest.approx(-np.log(noisy_p).mean())
+    for target, p in (("clean", clean_p), ("noisy", noisy_p)):
+        for k in (1, 4, 16, 64, 256):
+            assert values[f"pass@k_exact/pass@{k}/{target}"] == pytest.approx((1 - (1 - p) ** k).mean())
+    # The background centers plus the two distinguished centers give the exact mean.
+    means = 0.3 / 254 * (CENTERS.sum() - CENTERS[clean_indices] - CENTERS[noisy_indices])
+    means += clean_p * CENTERS[clean_indices] + noisy_p * CENTERS[noisy_indices]
+    for target, continuous in (("clean", selected["query_signal"]), ("noisy", selected["query_y"])):
+        mse = ((means - continuous) ** 2).mean()
+        assert values[f"eval/mse/{target}"] == pytest.approx(mse)
+        assert not np.isclose(mse, ((means - decode(encode(continuous))) ** 2).mean())
 
 
 def test_sampled_mean_mse_averages_predictions_before_squaring():
@@ -375,7 +415,8 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
     assert array_hash(pools["eval"]) == before
 
 
-def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeypatch):
+@pytest.fixture
+def recorded_wandb(monkeypatch):
     class RecordingRun:
         id = "cpu-validation"
         url = "https://wandb.invalid/cpu-validation"
@@ -399,6 +440,11 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
         return recorded_run
 
     monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=initialize))
+    return recorded_run, init_arguments
+
+
+def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb):
+    recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.1))
     assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 64
@@ -422,49 +468,43 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.1
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
-    assert init_arguments["config"]["dashboard_schema_version"] == 2
-    assert init_arguments["config"]["dashboard_pass_k"] == [1, 16, 256]
-    assert init_arguments["config"]["train_evaluation_prompts"] == 4
-    assert init_arguments["config"]["periodic_generation_prompts"] == 2
-    assert init_arguments["config"]["final_generation_prompts"] == 4
+    assert init_arguments["config"]["dashboard_schema_version"] == 3
+    assert init_arguments["config"]["dashboard_pass_k"] == [1, 4, 16, 64, 256]
+    assert init_arguments["config"]["evaluation_prompts"] == 4
+    assert init_arguments["config"]["method"] == "sft"
     assert [step for step, _ in recorded_run.history] == [0, 1, 2]
     events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     evaluations = {event["step"]: event for event in events if event["kind"] == "evaluation"}
     references = json.loads((tmp_path / "run" / "references.json").read_text())
     for step, values in recorded_run.history:
         evaluation = evaluations[step]["eval"]
-        assert values["likelihood/eval_answer_nll"] == evaluation["answer_nll"]["mean"]
-        assert values["likelihood/train_answer_nll"] == evaluations[step]["train"]["answer_nll"]["mean"]
+        assert values["eval/nll/noisy"] == evaluation["answer_nll"]["mean"]
+        assert values["eval/nll/clean"] == evaluation["clean_answer_nll"]["mean"]
         assert (
-            values["regression/model_signal_mse"]
+            values["eval/mse/clean"]
             == evaluation["predictive_mean_errors"]["continuous_noiseless_signal"]["mse"]["mean"]
         )
-        assert values["regression/sampled_signal_mse_256"] == evaluation["generation"]["sampled_mean_mse"]["mean"]
-        assert values["progress/generation_prompts"] == (4 if step == 2 else 2)
-        assert {key for key in values if key.startswith("pass_")} == {
-            f"{group}/pass@{k}" for group in ("pass_exact", "pass_sampled") for k in (1, 16, 256)
+        assert (
+            values["eval/mse/noisy"] == evaluation["predictive_mean_errors"]["continuous_noisy_outcome"]["mse"]["mean"]
+        )
+        assert {key for key in values if key.startswith("pass")} == {
+            f"pass@k_exact/pass@{k}/{target}" for target in ("clean", "noisy") for k in (1, 4, 16, 64, 256)
         }
-        for k in (1, 16, 256):
-            assert values[f"pass_exact/pass@{k}"] == evaluation["exact_pass"][str(k)]["mean"]
-            assert values[f"pass_sampled/pass@{k}"] == evaluation["generation"]["generative_pass"][str(k)]["mean"]
-        for label, source in (
-            ("query_only", "query_only_decoded_plugin_approximation"),
-            ("ridge_quantized", "ridge_decoded_gaussian_approximation"),
-            ("bayes_continuous", "bayesian_continuous_optimistic"),
-        ):
-            assert values[f"likelihood/{label}_answer_nll"] == references[source]["answer_nll"]["mean"]
-            assert (
-                values[f"regression/{label}_signal_mse"]
-                == references[source]["predictive_mean_errors"]["continuous_noiseless_signal"]["mse"]["mean"]
-            )
-        assert [key for key in values if "prompts" in key] == ["progress/generation_prompts"]
+        for target, source in (("clean", "clean_exact_pass"), ("noisy", "exact_pass")):
+            for k in (1, 4, 16, 64, 256):
+                assert values[f"pass@k_exact/pass@{k}/{target}"] == evaluation[source][str(k)]["mean"]
+        assert values["timing/evaluation_seconds"] == evaluations[step]["evaluation_seconds"]
+        assert 0 < values["timing/evaluation_seconds"] <= values["timing/elapsed_seconds"]
         assert not any(
             unwanted in key
             for key in values
-            for unwanted in ("prompt_se", "normal95", "sampling_sd", "example_ids", "noisy_outcome", "grid_value")
+            for unwanted in ("prompts", "prompt_se", "normal95", "sampled", "sampling_sd", "example_ids")
         )
-        assert not any(key.startswith(("reference/", "eval/", "train_eval/", "trainer/")) for key in values)
-        assert len(values) == (21 if step == 0 else 25 if step == 2 else 24)
+        assert not any(
+            key.startswith(("reference/", "train_eval/", "trainer/", "progress/", "regression/", "likelihood/"))
+            for key in values
+        )
+        assert len(values) == (17 if step == 0 else 22 if step == 2 else 21)
         if step == 2:
             assert values["diagnostics/context_shuffle_nll_increase"] == pytest.approx(
                 evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
@@ -472,14 +512,18 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
         else:
             assert "diagnostics/context_shuffle_nll_increase" not in values
         if step:
-            assert "train/batch_answer_nll" in values and "train/learning_rate" in values
+            assert "train/answer_nll" in values and "train/learning_rate" in values
+            assert 0 < values["timing/optimizer_step_seconds"] < values["timing/elapsed_seconds"]
     # New numeric artifact diagnostics must never silently become dashboard panels.
     final_event = evaluations[2]
     curated = event_metrics(final_event)
     final_event["eval"]["future_diagnostic"] = {"mean": 123, "prompts": 4}
+    del final_event["train"]
+    del final_event["eval"]["generation"]
     assert event_metrics(final_event) == curated
-    assert "prompt_se" in final_event["eval"]["generation"]["sampled_mean_mse"]
+    assert "prompt_se" in final_event["eval"]["answer_nll"]
     assert len(final_event["eval"]["exact_pass"]) == 9
+    assert len(final_event["eval"]["clean_exact_pass"]) == 9
     assert len(references) == 5
     assert recorded_run.finished
     assert recorded_run.summary == {
@@ -489,3 +533,41 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
         "result/final_checkpoint": summary["final_checkpoint"],
     }
     assert json.loads((tmp_path / "run" / "wandb_run.json").read_text())["id"] == recorded_run.id
+
+
+@pytest.mark.parametrize(
+    "method,reference",
+    [
+        ("bayesian", "bayesian_continuous_optimistic"),
+        ("ridge", "ridge_decoded_gaussian_approximation"),
+    ],
+)
+def test_baseline_logs_same_exact_metrics_once_at_step_zero(tmp_path, recorded_wandb, method, reference):
+    recorded_run, init_arguments = recorded_wandb
+    pool = tmp_path / "data"
+    dataset_config = DatasetConfig(train_count=8, eval_count=4, sigma=0.1)
+    prepare(pool, dataset_config)
+    tracking = TrackingConfig(True, "noisy-regression-sft", f"{method}-validation")
+    output = tmp_path / method
+    event = evaluate_baseline(pool, output, method, tracking)
+    assert [step for step, _ in recorded_run.history] == [0]
+    values = recorded_run.history[0][1]
+    assert values == event_metrics(event)
+    assert len(values) == 17
+    assert recorded_run.finished
+    assert init_arguments["project"] == tracking.project_name
+    assert init_arguments["config"]["method"] == method
+    assert init_arguments["config"]["reference_distribution"] == reference
+    assert init_arguments["config"]["evaluation_prompts"] == 4
+    assert not any(key.startswith(("reference/", "train/", "progress/")) for key in values)
+    assert "generation" not in event["eval"]
+    pools, _ = load_pool(pool)
+    expected = reference_distributions(pools["eval"], dataset_config)[reference]
+    with np.load(output / "per_prompt.npz") as archive:
+        np.testing.assert_allclose(archive["log_probs"], expected, atol=1e-13)
+        np.testing.assert_array_equal(archive["ids"], pools["eval"]["ids"])
+        assert set(archive.files) == {"ids", "log_probs"}
+    assert json.loads((output / "metrics.json").read_text()) == event
+    with pytest.raises(FileExistsError):
+        evaluate_baseline(pool, output, method, tracking)
+    assert len(recorded_run.history) == 1

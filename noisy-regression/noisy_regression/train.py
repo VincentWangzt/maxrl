@@ -253,7 +253,26 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     tracker = None
     if tracking_config is not None:
         state_before_tracking = rng_state()
-        tracker = initialize_tracking(tracking_config, output_path, manifest, metadata, references)
+        tracker = initialize_tracking(
+            tracking_config,
+            output_path,
+            {
+                **manifest["training"],
+                "method": "sft",
+                **{
+                    name: manifest[name]
+                    for name in (
+                        "architecture",
+                        "parameter_count",
+                        "optimizer_parameter_groups",
+                        "versions",
+                        "git_commit",
+                        "resume_from",
+                    )
+                },
+            },
+            metadata,
+        )
         restore_rng(state_before_tracking)
 
     def emit(event):
@@ -280,6 +299,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
 
     def evaluate_and_save(current_step):
         nonlocal best
+        evaluation_started = time.perf_counter()
         checkpoint = output_path / f"checkpoint-{current_step:05d}"
         final = current_step == config.max_steps
         indices = np.arange(len(splits["eval"]["tokens"])) if final else generation_indices
@@ -307,6 +327,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             metrics["eval"]["mismatched_context_control"] = likelihood(
                 model, control_tokens, config.eval_batch_size, device, config.precision
             )
+        metrics["evaluation_seconds"] = time.perf_counter() - evaluation_started
         nll = metrics["eval"]["answer_nll"]["mean"]
         if best["answer_nll"] is None or nll < best["answer_nll"]:
             best = {"answer_nll": nll, "step": current_step, "checkpoint": str(checkpoint)}
@@ -322,7 +343,9 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         evaluate_and_save(0)
     first_step = step + 1
     for step in range(first_step, config.max_steps + 1):
+        optimizer_step_started = time.perf_counter()
         step_metrics = optimize_step(model, optimizer, scheduler, order, splits["train"]["tokens"], config, device)
+        step_metrics["optimizer_step_seconds"] = time.perf_counter() - optimizer_step_started
         if step % config.log_interval == 0 or step == 1:
             emit({"kind": "optimization", "step": step, "presentations": order.presentations, **step_metrics})
         if step % config.eval_interval == 0 or step == config.max_steps:
@@ -340,7 +363,14 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     }
     write_json(output_path / "summary.json", summary)
     if tracker is not None:
-        tracker.finish(summary)
+        tracker.finish(
+            {
+                "result/best_answer_nll": summary["best"]["answer_nll"],
+                "result/best_step": summary["best"]["step"],
+                "result/best_checkpoint": summary["best"]["checkpoint"],
+                "result/final_checkpoint": summary["final_checkpoint"],
+            }
+        )
     print(json.dumps(summary, indent=2), flush=True)
     return summary
 

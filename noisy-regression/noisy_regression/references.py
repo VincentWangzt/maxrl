@@ -38,21 +38,30 @@ def bayesian_predictive(context_x, context_y, query_x, sigma):
     )
 
 
+def regression_log_probs(arrays, config: DatasetConfig, *, decoded):
+    """One Bayesian/ridge distribution with explicit input precision."""
+    config.validate()
+    x, y, query = arrays["context_x"], arrays["context_y"], arrays["query_x"]
+    if decoded:
+        x, y, query = decode(encode(x)), decode(encode(y)), decode(encode(query))
+    mean, variance = bayesian_predictive(x, y, query, config.sigma)
+    return gaussian_bin_log_probs(mean, variance)
+
+
 def reference_distributions(arrays, config: DatasetConfig):
     config.validate()
     count = len(arrays["tokens"])
     result = {"uniform_256": np.full((count, 256), -np.log(256))}
     for decoded in (False, True):
-        x, y, query = arrays["context_x"], arrays["context_y"], arrays["query_x"]
+        query = arrays["query_x"]
         if decoded:
-            x, y, query = decode(encode(x)), decode(encode(y)), decode(encode(query))
+            query = decode(encode(query))
         query_name = "query_only_decoded_plugin_approximation" if decoded else "query_only_continuous_optimistic"
         result[query_name] = gaussian_bin_log_probs(
             np.zeros(count), config.sigma**2 + (query**2).sum(-1) / config.dimension
         )
-        mean, variance = bayesian_predictive(x, y, query, config.sigma)
         bayes_name = "ridge_decoded_gaussian_approximation" if decoded else "bayesian_continuous_optimistic"
-        result[bayes_name] = gaussian_bin_log_probs(mean, variance)
+        result[bayes_name] = regression_log_probs(arrays, config, decoded=decoded)
     return result
 
 
