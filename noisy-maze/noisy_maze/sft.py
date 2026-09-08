@@ -602,7 +602,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--micro_batch_size", type=int, default=8, help="Micro batch size for gradient accumulation")
-    parser.add_argument("--num_epochs", type=int, default=2, help="Number of epochs")
+    parser.add_argument("--num_epochs", type=int, default=1, help="Number of epochs")
     parser.add_argument("--max_steps", type=int, default=6000, help="Stop after this many optimizer steps")
     parser.add_argument("--max_length", type=int, default=512, help="Max sequence length")
     parser.add_argument("--lr_scheduler", type=str, default="constant", choices=["cosine", "constant"], help="Learning rate scheduler type")

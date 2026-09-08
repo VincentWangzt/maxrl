@@ -59,11 +59,11 @@ exec python3 -m noisy_maze.sft \
   --val_data "${VAL_DATA}" \
   --output_dir "${OUTPUT_DIR}" \
   --max_position_embeddings "${MAX_LENGTH}" \
-  --batch_size 32 \
+  --batch_size "${SFT_BATCH_SIZE}" \
   --micro_batch_size 8 \
   --learning_rate 5e-4 \
   --lr_scheduler constant \
-  --num_epochs 2 \
+  --num_epochs 1 \
   --max_steps "${SFT_MAX_STEPS}" \
   --max_length "${MAX_LENGTH}" \
   --save_steps 500 \

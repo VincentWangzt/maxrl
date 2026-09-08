@@ -45,13 +45,13 @@ The generator creates four disjoint splits, deduplicated by the **real maze**:
 
 | Split | Rows |
 | --- | ---: |
-| SFT train | 100,000 |
+| SFT train | 192,000 |
 | SFT evaluation | 128 |
 | RL train | 1,024 |
 | RL evaluation | 128 |
 
 At the defaults, dataset directories are
-`data/noisy_maze_17_noise_0.1_sft_100000` and
+`data/noisy_maze_17_noise_0.1_sft_192000` and
 `data/noisy_maze_17_noise_0.1_rl_1024`. Both contain metadata and file hashes.
 These are fresh splits within this experiment; no exclusion check is made against
 the original experiment's corpus. Distinct real mazes can produce identical
@@ -63,9 +63,11 @@ SFT uses batch size **32**, microbatch size 8, **6,000 optimizer steps**, and
 warmup. The copied Qwen2 architecture has hidden size 256, four layers, four
 attention heads, two KV heads, and intermediate size 1,024.
 
-The 6,000-step run allows two epochs over the 100,000 training examples and stops
-at step 6,000. Its checkpoints live in
-`checkpoints/noisy_maze_17_noise_0.1_sft_100000_6000steps`, preserving the earlier
+The 6,000-step run uses exactly one shuffled epoch over 192,000 distinct training
+examples: every optimizer step receives 32 samples without reusing any training
+row. The shared config derives the SFT training count from steps × batch size.
+Its checkpoints live in
+`checkpoints/noisy_maze_17_noise_0.1_sft_192000_6000steps`, preserving the earlier
 3,000-step run in its original directory. The RL launcher uses the new run's
 `ckpt-6000` after SFT finishes. RL run names also include the SFT step count so
 automatic checkpoint resume cannot pick up an older run trained from `ckpt-3000`.
@@ -88,7 +90,7 @@ alternate learning rate and gives it a separate run name.
 All SFT and RL launchers log to the W&B project `noisy_maze_maxrl_17x17`.
 Run names include the maze size and noise fraction; RL names also include the
 training set size, advantage estimator, rollout count, and learning rate. For example:
-`noisy_maze_17_noise_0.1_sft_100000-constant-lr-5e-4-6000steps` and
+`noisy_maze_17_noise_0.1_sft_192000-constant-lr-5e-4-6000steps` and
 `noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5-sft_6000steps`.
 
 The custom scorer uses `verl`'s batch reward manager. The existing prime manager
@@ -116,11 +118,21 @@ repository `.venv` and load W&B credentials from `.env`, like the existing scrip
 Generated artifacts remain under `noisy-maze/`; dataset creation and SFT refuse
 to overwrite existing output directories.
 
-If the original 2,048-row RL dataset and SFT checkpoint already exist, run
+For an existing 100,000-row SFT corpus and original 2,048-row RL corpus, run
+`bash noisy-maze/prepare_sft_extension.sh` instead of `prepare.sh`. It retains all
+100,000 SFT training rows and adds 92,000 distinct mazes with generator seed
+17202610 and masking seed 71202610. It excludes the existing SFT evaluation set
+and both original RL splits (covering the 1,024-row subset), copies SFT evaluation
+byte for byte, and records source hashes and extension provenance. Reusing the
+original seed with a larger split would otherwise leak those existing held-out
+and RL mazes into SFT. The expanded corpus is used for a new model trained from
+scratch, so each of its 6,000 steps sees fresh samples within that run.
+
+If the original 2,048-row RL dataset exists, run
 `bash noisy-maze/prepare_rl_subset.sh` before the RL launchers. This selects 1,024
 training rows with seed 1024, preserves their clouded observations and real mazes,
 and copies the original evaluation file byte for byte. Metadata retains source
-hashes and row indices. SFT data and checkpoints are reused. Fresh preparation with
+hashes and row indices. Fresh preparation with
 `prepare.sh` directly generates the current 1,024-row RL split instead.
 
 To change size or noise, pass the same settings to each stage:

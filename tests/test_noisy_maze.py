@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 from noisy_maze.curate import curate_subset
+from noisy_maze.extend_sft import extend_sft
 from noisy_maze.generate_maze import MazeGenerator, connecting_positions, normalize_noise_fraction, obscure_observation
 from noisy_maze.prepare import DatasetConfig, generate_splits, make_rl_record, prepare_datasets, question_fingerprint
 from noisy_maze.reward import compute_optimal_length, compute_score, compute_scores, validate_solution
@@ -107,6 +108,43 @@ def test_curated_subset_preserves_observations_truth_and_evaluation(tmp_path):
     assert metadata["rl_title"].endswith("_rl_4")
     with pytest.raises(FileExistsError):
         curate_subset(source_dir, train_count=4, seed=1024)
+
+
+def test_sft_extension_excludes_existing_splits_and_preserves_evaluation(tmp_path):
+    config = DatasetConfig(size=9, sft_train_count=4, sft_eval_count=2, rl_train_count=8, rl_eval_count=2)
+    parent_metadata = prepare_datasets(config, tmp_path)
+    source_dir = tmp_path / parent_metadata["sft_title"]
+    rl_dir = tmp_path / parent_metadata["rl_title"]
+    original = json.loads((source_dir / "train.json").read_text())
+    rl_bytes = {split: (rl_dir / f"{split}.parquet").read_bytes() for split in ("train", "test")}
+    # Replay the source stream deliberately: all 16 original mazes must be rejected.
+    result = extend_sft(source_dir, rl_dir, 12, config.generator_seed, config.noise_seed)
+    output_dir = Path(result["output_dir"])
+    rows = json.loads((output_dir / "train.json").read_text())
+    keys = {question_fingerprint(row["ground_truth"]) for row in rows}
+    assert len(rows) == len(keys) == 12
+    assert rows[:4] == original
+    assert result["retained_train_rows"] == 4 and result["added_train_rows"] == 8
+    assert result["rejected_candidates"] >= 16
+    assert result["excluded_rows"] == {"sft_eval": 2, "rl_train": 8, "rl_eval": 2}
+    assert (output_dir / "test.json").read_bytes() == (source_dir / "test.json").read_bytes()
+    eval_rows = json.loads((source_dir / "test.json").read_text())
+    excluded = {question_fingerprint(row["ground_truth"]) for row in eval_rows}
+    for split in ("train", "test"):
+        assert (rl_dir / f"{split}.parquet").read_bytes() == rl_bytes[split]
+        excluded.update(question_fingerprint(row["ground_truth"]) for row in pq.read_table(rl_dir / f"{split}.parquet").column("reward_model").to_pylist())
+    assert not keys & excluded
+    for row in rows[4:]:
+        assert row["sequence"].split().count("UNKNOWN") == 2
+        assert compute_score("noisy_maze_test", row["sequence"].partition("PATH_START")[2], row["ground_truth"]) == 1
+    metadata = json.loads((output_dir / "metadata.json").read_text())
+    assert metadata["splits"]["sft_train"]["rows"] == 12
+    with pytest.raises(FileExistsError):
+        extend_sft(source_dir, rl_dir, 12, config.generator_seed, config.noise_seed)
+    with (source_dir / "test.json").open("a") as handle:
+        handle.write("\n")
+    with pytest.raises(ValueError, match="checksum"):
+        extend_sft(source_dir, rl_dir, 13, config.generator_seed, config.noise_seed)
 
 
 def test_true_maze_reward_rejects_hidden_wall_and_invalid_responses(hidden_wall_item):

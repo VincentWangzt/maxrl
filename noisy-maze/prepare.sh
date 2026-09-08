@@ -6,4 +6,5 @@ export CUDA_VISIBLE_DEVICES=""
 exec "${VENV_DIR}/bin/python" -m noisy_maze.prepare \
   --size "${MAZE_SIZE}" \
   --noise-fraction "${NOISE_FRACTION}" \
+  --sft-train-count "${SFT_TRAIN_COUNT}" \
   --rl-train-count "${RL_TRAIN_COUNT}"
