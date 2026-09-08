@@ -106,6 +106,11 @@ and URL are saved in `wandb_run.json`. A resumed training invocation starts a
 new W&B run with `resume_from` identifying the source checkpoint; numerical
 resume state and the original logs are preserved.
 
+`train/gradient_norm_before_clip` records the global L2 norm of all parameter
+gradients after the effective batch's backward passes and before clipping.
+It is logged with training loss/LR at step 1 and every `LOG_INTERVAL` steps
+(currently 10). Clipping at 1.0 does not cap the reported pre-clipping norm.
+
 Data preparation refuses an existing output directory. Training and standalone
 evaluation also require new output directories. To resume, set
 `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in the top block of `sft.sh`, leaving
@@ -114,6 +119,9 @@ scheduler, Python/NumPy/Torch/CUDA RNGs, current shuffle, cursor, epoch counter,
 presentation count and best checkpoint. Prior checkpoints remain where they
 were saved; the best pointer may reference the original run directory. A
 checkpoint directory is published only after all its files are written.
+Generation settings have been removed from the current training configuration.
+Older trainer states with those settings require their original code revision
+for an exact resume; their saved models remain usable with `evaluate.sh`.
 
 ## Evaluation and interpretation
 
@@ -129,44 +137,23 @@ for the noisy target tokens. `clean_exact_pass[k]` instead scores the tokens
 obtained by quantizing `query_signal`. `answer_nll` and `clean_answer_nll`
 likewise score the noisy and clean tokens under the same model distribution.
 Dashboard MSE uses that distribution's exact mean against each continuous target.
-The following sampling measurements are retained only in offline artifacts.
-`generation.generative_pass[k]` is the combinatorial estimator from 256 actual
-independent digit-pair completions per prompt, for
-`k = 1,2,4,8,16,32,64,128,256`. Periodic generation uses a fixed 128-example
-subset; final generation uses all 1,024 examples. Per-prompt prefill is cached
-and branched over 16 first digits to get all conditional second-digit
-distributions. Sampling then draws a first digit followed by a second digit
-conditioned on that sampled first digit, from the cached probabilities on CPU.
-Temperature is 1, without truncation or beams; output length is exactly 2.
-`eval_batch_size` controls GPU prompt batches; `generation_batch_size` controls
-CPU prompt batches when sampling those distributions. The complete samples,
-IDs, success counts and joint log-probability tables are saved.
 
-`generation.sampled_mean_mse` decodes each of a prompt's 256
-sampled predictions to its scalar grid center, averages those predictions, then
-squares the difference from the stored **continuous noiseless signal**
-`query_signal = w·x_query`. The metric averages these squared errors across
-generated prompts (128 at periodic evaluations, all 1,024 at the final step),
-with prompt SE and an approximate 95% interval. It uses the same completions as
-pass@k. It is distinct from the exact-distribution predictive-mean MSE below:
-the sample mean retains finite-sampling variability. This sampled metric stays
-in checkpoint metrics, JSONL and the generated report, with its uncertainty.
-The dashboard logs only exact full-pool MSE, under `eval/mse/clean` and
-`eval/mse/noisy`.
+**Evaluation does not generate sampled completions.** For each prompt, one
+cached prefill gives the 16 first-digit probabilities, then branching the cache
+over those 16 digits gives all conditional second-digit probabilities. This
+enumerates all 256 complete answers. `eval_batch_size` controls the prompt
+batch size. Training-time evaluation and `evaluate.sh` both use this path;
+there is no generation subset, sample count, generation batch size, or sampling
+seed. Each new evaluation NPZ contains only full-pool `ids` and `log_probs`.
+The offline report also uses exact clean/noisy MSE, NLL and pass@k.
+
+MSE uses the exact weighted grid mean against the continuous signal or outcome.
 The logged value remains raw MSE. The noiseless signal's population variance is
 already 1 under this experiment's prior, so normalizing by it changes nothing.
-The detailed evaluation report also compares MSE with always predicting zero on
-the same prompts; those derived ratios are not additional W&B metrics.
-
-Exact and generated metrics are compared on the same selected prompts. Prompt
-standard errors and approximate normal intervals use examples as units;
-conditional Monte Carlo standard deviations integrate the estimator over each
-prompt's `Binomial(256,p_target)` success count. They do not count completions as
-additional regression examples or capture training-seed variation. A fixed
-sampling seed plus checkpoint step is used, independently of training RNGs.
-Changing generation batch size changes the sample stream assignment, not the
-distribution. Fixed subset indices come from one separate PCG64 stream: a
-training permutation followed by an evaluation permutation.
+Archived sampled metrics and completions from earlier runs remain unchanged.
+They describe the former sampling procedure; current scripts do not recreate
+them. The separate fixed training subset for offline NLL uses PCG64 with
+`subset_seed`; held-out evaluation always uses the full pool.
 
 Reference metrics include uniform 256-way predictions, query-only continuous
 prior predictions, their decoded-query plug-in approximation, continuous-data
@@ -201,7 +188,7 @@ or architecture adequacy claim is assumed.
   Step 0 is retained and eligible for best-checkpoint selection. The original
   run uses `qwen2_1m_fixed100k_sft_10000/`; its dataset is `fixed_d4_n16_100k/`.
 - Seeds: training data 1729; evaluation data 2718; model/global 3141;
-  training order 1618; fixed subsets 5772; completion sampling 8119 + step.
+  training order 1618; fixed training subset 5772. Evaluation uses no sampling RNG.
 
 The SFT launcher creates the report after successful completion. It can also be
 rendered while the run is in progress on the server:

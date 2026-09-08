@@ -1,5 +1,9 @@
 # Evaluation metrics and normalization
 
+This is a historical audit of the first run, including its sampled completions.
+Current evaluation enumerates exact distributions and does not sample answers;
+see [METRICS.md](METRICS.md) for the current clean/noisy dashboard and definitions.
+
 This report describes the implemented evaluator and audits the completed first
 run, `qwen2_1m_fixed100k_sft_10000`. The model learned a better distribution of
 answers, but its predictive means did not improve on predicting zero. Both the

@@ -58,7 +58,7 @@ artifacts, without additional dashboard curves.
   before averaging across prompts.
 - **Sampled pass@k:** an estimate from 256 actual completions per example. For
   `c` matching completions it is `1 - C(256-c,k)/C(256,k)`. This is a sampling
-  check retained in offline artifacts, not a dashboard metric. At k=256 it records
+  check retained in historical artifacts, not a current evaluation metric. At k=256 it records
   whether at least one completion matched the stored target.
 
 High pass@256 can coexist with a poor mean prediction: many guesses can cover
@@ -171,9 +171,18 @@ dataset sizes and method settings live in run config. W&B's native step is the
 optimizer step; no duplicate step metric is logged.
 
 Every dashboard MSE/NLL/pass metric uses all 1,024 held-out examples at every
-evaluation, including step 0 and the final step. Sampling-subset changes do not
-affect these scores. Offline training artifacts still retain sampled diagnostics
-and fixed-training-subset likelihood, but the dashboard has no dependency on them.
+evaluation, including step 0 and the final step. The evaluator enumerates all
+256 answers and does not sample completions, including for the offline report.
+New evaluation NPZ files contain only full-pool IDs and exact log probabilities.
+Sampling helpers remain available for focused numerical checks, and historical
+sample artifacts remain untouched. The separate fixed-training-subset NLL is
+still retained offline, with no dashboard dependency on it.
+
+`train/gradient_norm_before_clip` is the global L2 norm across all model
+parameter gradients after backward passes over the effective batch, before
+gradient clipping. It is logged with loss/LR at step 1 and then every
+`log_interval` steps (10 in the launcher). Values above the clipping threshold
+are expected and useful; the metric does not report the capped gradient norm.
 
 `elapsed_seconds` measures total wall time since the invocation started, including
 restored elapsed time on resume. `optimizer_step_seconds` measures the logged

@@ -1,4 +1,4 @@
-"""Evaluate a saved model on the frozen held-out pool."""
+"""Evaluate exact answer distributions on the frozen held-out pool; no sampling."""
 
 import argparse
 import json
@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM
 
-from noisy_regression.codec import DIGITS, PROMPT_LENGTH
-from noisy_regression.data import fixed_subset_indices, load_pool, subset, write_json
-from noisy_regression.metrics import distribution_summary, mean_se, sampled_mean_mse, sampled_summary
-from noisy_regression.model import conditional_log_probs, joint_log_probs, sample_answers, teacher_forced_nll
+from noisy_regression.codec import PROMPT_LENGTH
+from noisy_regression.data import load_pool, subset, write_json
+from noisy_regression.metrics import distribution_summary, mean_se
+from noisy_regression.model import conditional_log_probs, joint_log_probs, teacher_forced_nll
 
 
 def precision_context(device, precision):
@@ -61,76 +61,29 @@ def likelihood(model, tokens, batch_size, device, precision):
 def evaluate(
     model,
     arrays,
-    generation_indices,
     eval_batch_size,
-    generation_batch_size,
-    samples,
-    sampling_seed,
     device,
     precision,
     artifact_path=None,
 ):
-    if min(eval_batch_size, generation_batch_size) < 1 or samples != 256:
-        raise ValueError("Require positive batch sizes and exactly 256 completions per prompt")
-    indices = np.asarray(generation_indices, dtype=np.int64)
-    if (
-        indices.ndim != 1
-        or len(indices) < 1
-        or len(np.unique(indices)) != len(indices)
-        or np.any((indices < 0) | (indices >= len(arrays["tokens"])))
-    ):
-        raise ValueError("Generation subset must contain unique valid example indices")
+    if eval_batch_size < 1 or len(arrays["tokens"]) < 1:
+        raise ValueError("Require a positive evaluation batch size and a nonempty pool")
     model.eval()
-    first_parts, second_parts = [], []
+    log_prob_parts = []
     for start in range(0, len(arrays["tokens"]), eval_batch_size):
         prompt = torch.tensor(
             arrays["tokens"][start : start + eval_batch_size, :PROMPT_LENGTH].astype(np.int64), device=device
         )
         with precision_context(device, precision):
             first, second = conditional_log_probs(model, prompt)
-        joint_log_probs(first, second)
-        first_parts.append(first.cpu())
-        second_parts.append(second.cpu())
-    first, second = torch.cat(first_parts), torch.cat(second_parts)
-    log_probs = joint_log_probs(first, second).numpy()
+        log_prob_parts.append(joint_log_probs(first, second).cpu().numpy())
+    log_probs = np.concatenate(log_prob_parts)
     report = distribution_summary(log_probs, arrays)
-    generator = torch.Generator(device="cpu").manual_seed(sampling_seed)
-    completions = []
-    for start in range(0, len(indices), generation_batch_size):
-        selected = indices[start : start + generation_batch_size]
-        completions.append(sample_answers(first[selected], second[selected], samples, generator).numpy())
-    completions = np.concatenate(completions)
-    targets = arrays["tokens"][indices, -2:].astype(np.int64)
-    valid = ((completions >= 0) & (completions < DIGITS)).all(-1)
-    successes = (valid & (completions == targets[:, None, :]).all(-1)).sum(1)
-    target_indices = targets[:, 0] * 16 + targets[:, 1]
-    probabilities = np.exp(log_probs[indices, target_indices])
-    report["generation"] = sampled_summary(successes, probabilities, samples)
-    report["generation"].update(
-        {
-            "sampled_mean_mse": sampled_mean_mse(completions, arrays["query_signal"][indices]),
-            "invalid_completions": int((~valid).sum()),
-            "overlength_completions": 0,
-            "output_length_tokens": 2,
-            "temperature": 1.0,
-            "top_k": None,
-            "top_p": None,
-            "sampling_seed": sampling_seed,
-            "generation_batch_size_prompts": generation_batch_size,
-            "eval_batch_size_prompts": eval_batch_size,
-            "sampling_device": "cpu-float64 from model conditional probabilities",
-            "example_ids": arrays["ids"][indices].tolist(),
-        }
-    )
     if artifact_path is not None:
         np.savez_compressed(
             artifact_path,
             ids=arrays["ids"],
             log_probs=log_probs,
-            generation_indices=indices,
-            generation_ids=arrays["ids"][indices],
-            completions=completions.astype(np.uint8),
-            success_counts=successes,
         )
     return report
 
@@ -143,11 +96,6 @@ def main():
     parser.add_argument("--device", choices=["cpu", "cuda:0"], required=True)
     parser.add_argument("--precision", choices=["fp32", "bf16"], required=True)
     parser.add_argument("--eval-batch-size", type=int, default=32)
-    parser.add_argument("--generation-batch-size", type=int, default=32)
-    parser.add_argument("--generation-subset-size", type=int, default=1024)
-    parser.add_argument("--samples", type=int, default=256)
-    parser.add_argument("--subset-seed", type=int, default=5772)
-    parser.add_argument("--sampling-seed", type=int, default=8119)
     parser.add_argument("--cpu-threads", type=int, default=4)
     args = parser.parse_args()
     torch.set_num_threads(args.cpu_threads)
@@ -157,25 +105,14 @@ def main():
     saved_metadata = json.loads((args.checkpoint / "dataset_metadata.json").read_text())
     if metadata != saved_metadata:
         raise ValueError("Checkpoint and dataset metadata differ")
-    if not 1 <= args.generation_subset_size <= len(splits["eval"]["tokens"]):
-        raise ValueError("Generation subset exceeds held-out pool")
     args.output.mkdir(parents=True, exist_ok=False)
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint, attn_implementation="sdpa", local_files_only=True).to(
         device
     )
-    _, indices = fixed_subset_indices(
-        len(splits["train"]["tokens"]), len(splits["eval"]["tokens"]), 0, args.generation_subset_size, args.subset_seed
-    )
-    if args.generation_subset_size == len(splits["eval"]["tokens"]):
-        indices = np.arange(len(splits["eval"]["tokens"]))
     report = evaluate(
         model,
         splits["eval"],
-        indices,
         args.eval_batch_size,
-        args.generation_batch_size,
-        args.samples,
-        args.sampling_seed,
         device,
         args.precision,
         args.output / "per_prompt.npz",

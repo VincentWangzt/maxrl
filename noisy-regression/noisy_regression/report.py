@@ -1,4 +1,4 @@
-"""Produce loss/pass@k figures and a concise report from recorded results."""
+"""Produce loss and exact pass@k figures from distribution-only evaluation."""
 
 import argparse
 import json
@@ -8,15 +8,14 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 
-from noisy_regression.data import DatasetConfig, load_pool, subset
+from noisy_regression.data import DatasetConfig
 from noisy_regression.metrics import KS
-from noisy_regression.references import reference_report
 
 REFERENCE_STYLES = {
     "uniform_256": ("Uniform 256", "#a1a1aa", ":"),
     "query_only_continuous_optimistic": ("Query-only (continuous)", "#64748b", "--"),
+    "query_only_decoded_plugin_approximation": ("Query-only (quantized)", "#94a3b8", ":"),
     "bayesian_continuous_optimistic": ("Bayesian (continuous, optimistic)", "#168575", "--"),
     "ridge_decoded_gaussian_approximation": ("Ridge (decoded, approximate)", "#9e5bb5", ":"),
 }
@@ -57,53 +56,37 @@ def render_report(run):
     axes[1].legend(fontsize=8)
     fig.savefig(run / "learning_curves.png", dpi=180)
     plt.close(fig)
-    fig, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
-    generation = final["eval"]["generation"]
-    sampled_mean_mse = generation["sampled_mean_mse"]
-    generation_references = references
-    if generation["prompts"] < metadata["config"]["eval_count"]:
-        # Reference overlays use precisely the same tasks as sampled curves,
-        # including when rendering intermediate 128-prompt evaluations.
-        pools, _ = load_pool(manifest["data_path"])
-        with np.load(run / f"evaluation-{final['step']:05d}.npz", allow_pickle=False) as archive:
-            selected = subset(pools["eval"], archive["generation_indices"])
-        generation_references = reference_report(selected, dataset_config)
-    axis.plot(
-        KS,
-        [generation["exact_pass_same_subset"][str(k)]["mean"] for k in KS],
-        marker="o",
-        label="Model exact (same prompts)",
-    )
-    axis.errorbar(
-        KS,
-        [generation["generative_pass"][str(k)]["mean"] for k in KS],
-        yerr=[1.96 * generation["generative_pass"][str(k)]["prompt_se"] for k in KS],
-        marker=".",
-        label="Generated estimate ±1.96 prompt SE",
-    )
-    for name in (
-        "uniform_256",
-        "query_only_continuous_optimistic",
-        "bayesian_continuous_optimistic",
-        "ridge_decoded_gaussian_approximation",
-    ):
-        label, color, style = REFERENCE_STYLES[name]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
+    for axis, target, source in zip(axes, ("Clean", "Noisy"), ("clean_exact_pass", "exact_pass"), strict=True):
         axis.plot(
             KS,
-            [generation_references[name]["exact_pass"][str(k)]["mean"] for k in KS],
-            linestyle=style,
-            color=color,
-            label=label,
+            [final["eval"][source][str(k)]["mean"] for k in KS],
+            marker="o",
+            label="Model",
         )
-    axis.set(
-        xscale="log",
-        xlabel="k",
-        ylabel="pass@k",
-        ylim=(0, 1),
-        title=f"Same {generation['prompts']} held-out prompts, step {final['step']:,}",
-    )
-    axis.set_xticks(KS, [str(k) for k in KS])
-    axis.legend(fontsize=7)
+        for name in (
+            "uniform_256",
+            "query_only_continuous_optimistic",
+            "bayesian_continuous_optimistic",
+            "ridge_decoded_gaussian_approximation",
+        ):
+            label, color, style = REFERENCE_STYLES[name]
+            axis.plot(
+                KS,
+                [references[name][source][str(k)]["mean"] for k in KS],
+                linestyle=style,
+                color=color,
+                label=label,
+            )
+        axis.set(
+            xscale="log",
+            xlabel="k",
+            ylabel="Exact pass@k",
+            ylim=(0, 1),
+            title=f"{target} target · {final['eval']['prompts']} prompts · step {final['step']:,}",
+        )
+        axis.set_xticks(KS, [str(k) for k in KS])
+        axis.legend(fontsize=7)
     fig.savefig(run / "pass_at_k.png", dpi=180)
     plt.close(fig)
     rows = [
@@ -123,12 +106,16 @@ def render_report(run):
         "",
         "![Pass at k](pass_at_k.png)",
         "",
-        "| Predictor | Answer NLL | Exact pass@1 | Exact pass@16 | Exact pass@256 |",
+        "| Predictor | Clean MSE | Noisy MSE | Clean NLL | Noisy NLL |",
         "|---|---:|---:|---:|---:|",
     ]
     for name, metric in [("Final model" if summary else "Latest model", final["eval"]), *references.items()]:
+        label = REFERENCE_STYLES[name][0] if name in REFERENCE_STYLES else name
+        errors = metric["predictive_mean_errors"]
         rows.append(
-            f"| {name} | {metric['answer_nll']['mean']:.5f} | {metric['exact_pass']['1']['mean']:.5f} | {metric['exact_pass']['16']['mean']:.5f} | {metric['exact_pass']['256']['mean']:.5f} |"
+            f"| {label} | {errors['continuous_noiseless_signal']['mse']['mean']:.5f} | "
+            f"{errors['continuous_noisy_outcome']['mse']['mean']:.5f} | "
+            f"{metric['clean_answer_nll']['mean']:.5f} | {metric['answer_nll']['mean']:.5f} |"
         )
     if summary:
         rows += [
@@ -143,27 +130,24 @@ def render_report(run):
         ]
     rows += [
         "",
-        f"Generation used {generation['prompts']} held-out prompts and 256 independent completions each. Invalid completions: {generation['invalid_completions']}; overlength: {generation['overlength_completions']}. Exact and generated estimates below refer to the same prompts.",
+        f"Evaluation enumerated the exact distribution over all 256 answers for each of "
+        f"{final['eval']['prompts']} held-out prompts. No completions were sampled.",
         "",
-        f"The MSE of each prompt's mean of 256 decoded predictions against its continuous noiseless signal "
-        f"(w·x_query) is {sampled_mean_mse['mean']:.6f} ± {sampled_mean_mse['prompt_se']:.6f} prompt SE "
-        f"over {sampled_mean_mse['prompts']} prompts. Average predictions within each prompt before squaring the "
-        "error, then average squared errors across prompts. This sampled mean includes Monte Carlo variability; "
-        "the separately recorded exact-distribution predictive mean integrates over all 256 output bins.",
+        "MSE compares the exact probability-weighted grid mean with the continuous clean signal or noisy outcome. "
+        "NLL and pass@k score the corresponding quantized target under that same distribution.",
         "",
-        "| k | Exact | Generated | Prompt SE | Conditional sampling SD of mean |",
-        "|---|---:|---:|---:|---:|",
+        "| k | Clean exact pass@k | Noisy exact pass@k |",
+        "|---|---:|---:|",
     ]
     for k in KS:
-        entry = generation["generative_pass"][str(k)]
         rows.append(
-            f"| {k} | {generation['exact_pass_same_subset'][str(k)]['mean']:.5f} | {entry['mean']:.5f} | {entry['prompt_se']:.5f} | {entry['conditional_sampling_sd_of_mean']:.5f} |"
+            f"| {k} | {final['eval']['clean_exact_pass'][str(k)]['mean']:.5f} | "
+            f"{final['eval']['exact_pass'][str(k)]['mean']:.5f} |"
         )
     rows += [
         "",
-        "The prompt SE treats regression examples as units. Normal intervals are approximate; "
-        "conditional sampling SD integrates the estimator over Binomial(256,p_target) for each stored prompt. "
-        "It does not include model-training seed variability. Repeated checkpoint comparisons share the same evaluation examples.",
+        "Exact pass@k averages 1-(1-p_target)^k across examples. No Monte Carlo estimator is needed. "
+        "Repeated checkpoint comparisons share the same evaluation examples.",
         "",
         "Continuous-data references see more precise inputs/observations and are optimistic references. "
         "Decoded-data Gaussian/ridge predictors are plug-in approximations, not the exact posterior conditioned on quantized tokens. "
@@ -184,7 +168,7 @@ def render_report(run):
             )
     rows += [
         "",
-        "Dataset hashes, stable IDs and split-overlap audit: `dataset_metadata.json` and the source dataset's `metadata.json`/NPZ files. Per-prompt probabilities and sampled completions: `evaluation-*.npz`. Full checkpoint history and machine-readable metrics are retained.",
+        "Dataset hashes, stable IDs and split-overlap audit: `dataset_metadata.json` and the source dataset's `metadata.json`/NPZ files. Per-prompt IDs and exact probabilities: `evaluation-*.npz`. Full checkpoint history and machine-readable metrics are retained.",
         "",
     ]
     (run / "report.md").write_text("\n".join(rows))

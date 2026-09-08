@@ -340,7 +340,6 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         micro_batch_size=2,
         max_steps=3,
         train_eval_size=4,
-        generation_subset_size=4,
         device="cpu",
         precision="fp32",
         warmup_steps=2,
@@ -368,7 +367,11 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, learning_rate=1e-3), {})
 
 
-def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
+def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
+    def reject_sampling(*args, **kwargs):
+        raise AssertionError("Exact evaluation must not sample completions")
+
+    monkeypatch.setattr(torch, "multinomial", reject_sampling)
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4))
     config = TrainConfig(
@@ -377,9 +380,7 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
         max_steps=2,
         eval_interval=1,
         train_eval_size=4,
-        generation_subset_size=2,
         eval_batch_size=2,
-        generation_batch_size=2,
         device="cpu",
         precision="fp32",
         cpu_threads=1,
@@ -390,29 +391,43 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
     events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     evaluations = [event for event in events if event["kind"] == "evaluation"]
     assert [event["step"] for event in evaluations] == [0, 1, 2]
-    assert [event["eval"]["generation"]["prompts"] for event in evaluations] == [2, 2, 4]
+    assert [event["eval"]["prompts"] for event in evaluations] == [4, 4, 4]
     pools, _ = load_pool(pool)
     for event in evaluations:
+        assert "generation" not in event["eval"]
         for metric_group in (event["train"], event["eval"]):
             assert "first_token_nll" not in metric_group
             assert "second_token_conditional_nll" not in metric_group
         with np.load(tmp_path / "run" / f"evaluation-{event['step']:05d}.npz") as archive:
-            selected_signal = pools["eval"]["query_signal"][archive["generation_indices"]]
-            per_prompt_errors = (decode(archive["completions"]).mean(axis=1) - selected_signal) ** 2
-        mse = event["eval"]["generation"]["sampled_mean_mse"]
+            assert set(archive.files) == {"ids", "log_probs"}
+            np.testing.assert_array_equal(archive["ids"], pools["eval"]["ids"])
+            per_prompt_errors = (np.exp(archive["log_probs"]) @ CENTERS - pools["eval"]["query_signal"]) ** 2
+        mse = event["eval"]["predictive_mean_errors"]["continuous_noiseless_signal"]["mse"]
         assert mse["mean"] == pytest.approx(per_prompt_errors.mean())
-        assert mse["prompts"] == len(selected_signal)
+        assert mse["prompts"] == 4
     before = array_hash(pools["eval"])
     model = create_model(ModelConfig()).eval()
+    rng_before = torch.get_rng_state().clone()
     for suffix in ("one", "two"):
-        report = evaluate(
-            model, pools["eval"], np.arange(4), 2, 2, 256, 99, torch.device("cpu"), "fp32", tmp_path / f"{suffix}.npz"
-        )
-        assert report["generation"]["invalid_completions"] == 0
+        report = evaluate(model, pools["eval"], 2, torch.device("cpu"), "fp32", tmp_path / f"{suffix}.npz")
+        assert "generation" not in report
     with np.load(tmp_path / "one.npz") as one, np.load(tmp_path / "two.npz") as two:
-        np.testing.assert_array_equal(one["completions"], two["completions"])
+        assert set(one.files) == set(two.files) == {"ids", "log_probs"}
         np.testing.assert_array_equal(one["log_probs"], two["log_probs"])
+    torch.testing.assert_close(torch.get_rng_state(), rng_before, atol=0, rtol=0)
     assert array_hash(pools["eval"]) == before
+    with pytest.raises(ValueError, match="positive evaluation batch size"):
+        evaluate(model, pools["eval"], 0, torch.device("cpu"), "fp32")
+    # The launcher must still finish its report after the generation block is removed.
+    from noisy_regression.report import render_report
+
+    render_report(tmp_path / "run")
+    rendered = (tmp_path / "run" / "report.md").read_text()
+    assert "No completions were sampled" in rendered
+    assert "Clean MSE" in rendered and "Clean exact pass@k" in rendered
+    assert "Conditional sampling" not in rendered
+    for filename in ("learning_curves.png", "pass_at_k.png"):
+        assert (tmp_path / "run" / filename).stat().st_size > 0
 
 
 @pytest.fixture
@@ -454,9 +469,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         max_steps=2,
         eval_interval=1,
         train_eval_size=4,
-        generation_subset_size=2,
         eval_batch_size=2,
-        generation_batch_size=2,
         device="cpu",
         precision="fp32",
         cpu_threads=1,
@@ -475,6 +488,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert [step for step, _ in recorded_run.history] == [0, 1, 2]
     events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     evaluations = {event["step"]: event for event in events if event["kind"] == "evaluation"}
+    optimizations = {event["step"]: event for event in events if event["kind"] == "optimization"}
     references = json.loads((tmp_path / "run" / "references.json").read_text())
     for step, values in recorded_run.history:
         evaluation = evaluations[step]["eval"]
@@ -513,13 +527,16 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
             assert "diagnostics/context_shuffle_nll_increase" not in values
         if step:
             assert "train/answer_nll" in values and "train/learning_rate" in values
+            norm = values["train/gradient_norm_before_clip"]
+            assert norm == optimizations[step]["gradient_norm_before_clip"]
+            assert math.isfinite(norm) and norm > 0
             assert 0 < values["timing/optimizer_step_seconds"] < values["timing/elapsed_seconds"]
     # New numeric artifact diagnostics must never silently become dashboard panels.
     final_event = evaluations[2]
     curated = event_metrics(final_event)
     final_event["eval"]["future_diagnostic"] = {"mean": 123, "prompts": 4}
     del final_event["train"]
-    del final_event["eval"]["generation"]
+    assert "generation" not in final_event["eval"]
     assert event_metrics(final_event) == curated
     assert "prompt_se" in final_event["eval"]["answer_nll"]
     assert len(final_event["eval"]["exact_pass"]) == 9

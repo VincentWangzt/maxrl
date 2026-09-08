@@ -17,7 +17,7 @@ import transformers
 from transformers import AutoModelForCausalLM
 
 from noisy_regression.codec import save_codec
-from noisy_regression.data import DatasetConfig, FrozenOrder, fixed_subset_indices, load_pool, subset, write_json
+from noisy_regression.data import DatasetConfig, FrozenOrder, fixed_training_indices, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
 from noisy_regression.references import reference_report
@@ -40,12 +40,8 @@ class TrainConfig:
     seed: int = 3141
     order_seed: int = 1618
     subset_seed: int = 5772
-    sampling_seed: int = 8119
     train_eval_size: int = 1024
-    generation_subset_size: int = 128
     eval_batch_size: int = 32
-    generation_batch_size: int = 32
-    samples: int = 256
     device: str = "cuda:0"
     precision: str = "bf16"
     cpu_threads: int = 4
@@ -58,22 +54,15 @@ class TrainConfig:
             self.max_steps,
             self.eval_interval,
             self.eval_batch_size,
-            self.generation_batch_size,
             self.cpu_threads,
             self.log_interval,
         )
         if min(integers) < 1 or self.batch_size % self.micro_batch_size:
             raise ValueError("Positive sizes required; effective batch must be divisible by microbatch")
-        if not 1 <= self.train_eval_size <= len(
-            splits["train"]["tokens"]
-        ) or not 1 <= self.generation_subset_size <= len(splits["eval"]["tokens"]):
+        if not 1 <= self.train_eval_size <= len(splits["train"]["tokens"]):
             raise ValueError("Evaluation subset size exceeds its pool")
-        if (
-            self.samples != 256
-            or self.warmup_steps < 0
-            or min(self.seed, self.order_seed, self.subset_seed, self.sampling_seed) < 0
-        ):
-            raise ValueError("Require 256 completions, nonnegative seeds and warmup")
+        if self.warmup_steps < 0 or min(self.seed, self.order_seed, self.subset_seed) < 0:
+            raise ValueError("Require nonnegative seeds and warmup")
         if (
             not 0 <= self.beta1 < 1
             or not 0 <= self.beta2 < 1
@@ -162,7 +151,11 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
             loss = nll.sum() / config.batch_size
         loss.backward()
         loss_sum += nll.detach().sum()
-    gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm, error_if_nonfinite=True)
+    # clip_grad_norm_ returns the global norm BEFORE clipping, preserving spikes
+    # in the logged value even when gradients are scaled down for the update.
+    gradient_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), config.max_grad_norm, norm_type=2.0, error_if_nonfinite=True
+    )
     lr = optimizer.param_groups[0]["lr"]
     optimizer.step()
     scheduler.step()
@@ -193,12 +186,8 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     )
     scheduler = make_scheduler(optimizer, config.warmup_steps)
     order = FrozenOrder(len(splits["train"]["tokens"]), config.order_seed)
-    training_indices, generation_indices = fixed_subset_indices(
-        len(splits["train"]["tokens"]),
-        len(splits["eval"]["tokens"]),
-        config.train_eval_size,
-        config.generation_subset_size,
-        config.subset_seed,
+    training_indices = fixed_training_indices(
+        len(splits["train"]["tokens"]), config.train_eval_size, config.subset_seed
     )
     train_eval = subset(splits["train"], training_indices)
     step, previous_elapsed = 0, 0.0
@@ -239,10 +228,9 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "data_path": str(Path(data_path).resolve()),
         "resume_from": str(Path(resume).resolve()) if resume else None,
         "train_evaluation_ids": train_eval["ids"].tolist(),
-        "periodic_generation_ids": splits["eval"]["ids"][generation_indices].tolist(),
         "deterministic_algorithms": True,
         "likelihood_units": "nats per complete two-token answer",
-        "subset_policy": "PCG64(subset_seed): train permutation then eval permutation",
+        "subset_policy": "PCG64(subset_seed): fixed train permutation; evaluation uses the full pool",
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
@@ -302,7 +290,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         evaluation_started = time.perf_counter()
         checkpoint = output_path / f"checkpoint-{current_step:05d}"
         final = current_step == config.max_steps
-        indices = np.arange(len(splits["eval"]["tokens"])) if final else generation_indices
         metrics = {
             "kind": "evaluation",
             "step": current_step,
@@ -311,11 +298,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             "eval": evaluate(
                 model,
                 splits["eval"],
-                indices,
                 config.eval_batch_size,
-                config.generation_batch_size,
-                config.samples,
-                config.sampling_seed + current_step,
                 device,
                 config.precision,
                 output_path / f"evaluation-{current_step:05d}.npz",

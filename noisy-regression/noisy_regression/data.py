@@ -158,11 +158,9 @@ def subset(arrays, indices):
     return {name: value[indices] for name, value in arrays.items()}
 
 
-def fixed_subset_indices(train_count, eval_count, train_eval_size, generation_size, seed):
-    rng = np.random.default_rng(seed)
-    train_indices = rng.permutation(train_count)[:train_eval_size]
-    eval_indices = rng.permutation(eval_count)[:generation_size]
-    return train_indices, eval_indices
+def fixed_training_indices(train_count, train_eval_size, seed):
+    rng = np.random.Generator(np.random.PCG64(seed))
+    return rng.permutation(train_count)[:train_eval_size]
 
 
 class FrozenOrder:

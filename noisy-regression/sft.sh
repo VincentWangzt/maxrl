@@ -26,12 +26,8 @@ MAX_GRAD_NORM=1.0
 SEED=3141
 ORDER_SEED=1618
 SUBSET_SEED=5772
-SAMPLING_SEED=8119
 TRAIN_EVAL_SIZE=1024
-GENERATION_SUBSET_SIZE=128
 EVAL_BATCH_SIZE=32
-GENERATION_BATCH_SIZE=32
-SAMPLES=256
 CPU_THREADS=4
 LOG_INTERVAL=10
 USE_WANDB=true
@@ -88,8 +84,7 @@ python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "
   --learning-rate "${LEARNING_RATE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
   --weight-decay "${WEIGHT_DECAY}" --optimizer-epsilon "${OPTIMIZER_EPSILON}" \
   --warmup-steps "${WARMUP_STEPS}" --max-grad-norm "${MAX_GRAD_NORM}" \
-  --seed "${SEED}" --order-seed "${ORDER_SEED}" --subset-seed "${SUBSET_SEED}" --sampling-seed "${SAMPLING_SEED}" \
-  --train-eval-size "${TRAIN_EVAL_SIZE}" --generation-subset-size "${GENERATION_SUBSET_SIZE}" \
-  --eval-batch-size "${EVAL_BATCH_SIZE}" --generation-batch-size "${GENERATION_BATCH_SIZE}" \
-  --samples "${SAMPLES}" --cpu-threads "${CPU_THREADS}" --log-interval "${LOG_INTERVAL}"
+  --seed "${SEED}" --order-seed "${ORDER_SEED}" --subset-seed "${SUBSET_SEED}" \
+  --train-eval-size "${TRAIN_EVAL_SIZE}" --eval-batch-size "${EVAL_BATCH_SIZE}" \
+  --cpu-threads "${CPU_THREADS}" --log-interval "${LOG_INTERVAL}"
 exec python -m noisy_regression.report --run "${OUTPUT_DIR}"

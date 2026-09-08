@@ -12,11 +12,6 @@ GPU_ID=1
 DEVICE="cuda:0"
 PRECISION="bf16"
 EVAL_BATCH_SIZE=32
-GENERATION_BATCH_SIZE=32
-GENERATION_SUBSET_SIZE=1024
-SAMPLES=256
-SUBSET_SEED=5772
-SAMPLING_SEED=18119 # 8119 + final step 10000, as in training.
 CPU_THREADS=4
 
 source "${VENV_DIR}/bin/activate"
@@ -41,6 +36,4 @@ export TOKENIZERS_PARALLELISM=false
 cd "${REPO_ROOT}"
 exec python -m noisy_regression.evaluate --data "${DATA_DIR}" --checkpoint "${CHECKPOINT}" --output "${OUTPUT_DIR}" \
   --device "${DEVICE}" --precision "${PRECISION}" \
-  --eval-batch-size "${EVAL_BATCH_SIZE}" --generation-batch-size "${GENERATION_BATCH_SIZE}" \
-  --generation-subset-size "${GENERATION_SUBSET_SIZE}" --samples "${SAMPLES}" \
-  --subset-seed "${SUBSET_SEED}" --sampling-seed "${SAMPLING_SEED}" --cpu-threads "${CPU_THREADS}"
+  --eval-batch-size "${EVAL_BATCH_SIZE}" --cpu-threads "${CPU_THREADS}"
