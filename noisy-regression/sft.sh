@@ -6,14 +6,14 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k"
-RUN_NAME="qwen2_1m_fixed100k_sft_10000"
+RUN_NAME="qwen2_1m_fixed100k_sft_10000_bs64x1"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
 GPU_ID=1
 DEVICE="cuda:0"
 PRECISION="bf16"
 BATCH_SIZE=64
-MICRO_BATCH_SIZE=16
+MICRO_BATCH_SIZE=64
 MAX_STEPS=10000
 EVAL_INTERVAL=500
 LEARNING_RATE=5e-4
@@ -34,6 +34,9 @@ GENERATION_BATCH_SIZE=32
 SAMPLES=256
 CPU_THREADS=4
 LOG_INTERVAL=10
+USE_WANDB=true
+PROJECT_NAME="noisy-regression-sft"
+EXPERIMENT_NAME="${RUN_NAME}"
 MODEL_CONFIG_JSON='{
   "vocab_size": 22, "hidden_size": 128, "num_hidden_layers": 4,
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
@@ -49,6 +52,10 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
   set +a
 fi
+if [[ "${USE_WANDB}" == true && -z "${WANDB_API_KEY:-}" ]]; then
+  echo "WANDB_API_KEY is not set. Export it or add it to ${ENV_FILE}." >&2
+  exit 1
+fi
 [[ ! -e "${OUTPUT_DIR}" ]] || { echo "Refusing to overwrite ${OUTPUT_DIR}" >&2; exit 1; }
 nvidia-smi --id="${GPU_ID}" --query-gpu=index --format=csv,noheader,nounits >/dev/null
 if nvidia-smi --id="${GPU_ID}" --query-compute-apps=pid --format=csv,noheader,nounits | grep -Eq '[0-9]'; then
@@ -63,12 +70,17 @@ export MKL_NUM_THREADS="${CPU_THREADS}"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
+export WANDB_MODE=online
 cd "${REPO_ROOT}"
 resume_args=()
+tracking_args=(--project-name "${PROJECT_NAME}" --experiment-name "${EXPERIMENT_NAME}")
+if [[ "${USE_WANDB}" == true ]]; then
+  tracking_args+=(--use-wandb)
+fi
 if [[ -n "${RESUME_CHECKPOINT}" ]]; then
   resume_args=(--resume "${RESUME_CHECKPOINT}")
 fi
-python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "${resume_args[@]}" \
+python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "${resume_args[@]}" "${tracking_args[@]}" \
   --model-config-json "${MODEL_CONFIG_JSON}" \
   --device "${DEVICE}" --precision "${PRECISION}" \
   --batch-size "${BATCH_SIZE}" --micro-batch-size "${MICRO_BATCH_SIZE}" \

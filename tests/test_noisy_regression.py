@@ -2,7 +2,9 @@
 
 import json
 import math
+import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -39,6 +41,7 @@ from noisy_regression.model import (
     teacher_forced_nll,
 )
 from noisy_regression.references import bayesian_predictive, gaussian_bin_log_probs, reference_distributions
+from noisy_regression.tracking import TrackingConfig
 from noisy_regression.train import TrainConfig, load_checkpoint, optimize_step, save_checkpoint, train
 from scipy.stats import binom
 
@@ -301,3 +304,62 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
         np.testing.assert_array_equal(one["completions"], two["completions"])
         np.testing.assert_array_equal(one["log_probs"], two["log_probs"])
     assert array_hash(pools["eval"]) == before
+
+
+def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeypatch):
+    class RecordingRun:
+        id = "cpu-validation"
+        url = "https://wandb.invalid/cpu-validation"
+
+        def __init__(self):
+            self.history = []
+            self.summary = {}
+            self.finished = False
+
+        def log(self, metrics, step):
+            self.history.append((step, metrics.copy()))
+
+        def finish(self):
+            self.finished = True
+
+    recorded_run = RecordingRun()
+    init_arguments = {}
+
+    def initialize(**kwargs):
+        init_arguments.update(kwargs)
+        return recorded_run
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=initialize))
+    pool = tmp_path / "data"
+    prepare(pool, DatasetConfig(train_count=8, eval_count=4))
+    assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 64
+    config = TrainConfig(
+        batch_size=4,
+        micro_batch_size=4,
+        max_steps=2,
+        eval_interval=1,
+        train_eval_size=4,
+        generation_subset_size=2,
+        eval_batch_size=2,
+        generation_batch_size=2,
+        device="cpu",
+        precision="fp32",
+        cpu_threads=1,
+        log_interval=1,
+    )
+    tracking = TrackingConfig(True, "noisy-regression-sft", "cpu-validation")
+    summary = train(pool, tmp_path / "run", config, ModelConfig(), tracking_config=tracking)
+    assert summary["presentations"] == 8
+    assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
+    assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
+    assert [step for step, _ in recorded_run.history] == [0, 1, 2]
+    for step, values in recorded_run.history:
+        assert "eval/answer_nll" in values and "train_eval/answer_nll" in values
+        assert "eval/exact_pass@1" in values and "eval/generation/generative_pass@256" in values
+        assert "eval/generation/generative_pass@256/conditional_sampling_sd_of_mean" in values
+        assert "reference/uniform_256/answer_nll" in values
+        assert not any("example_ids" in name for name in values)
+        if step:
+            assert "train/answer_nll" in values and "train/learning_rate" in values
+    assert recorded_run.finished and recorded_run.summary["result/presentations"] == 8
+    assert json.loads((tmp_path / "run" / "wandb_run.json").read_text())["id"] == recorded_run.id

@@ -21,12 +21,13 @@ from noisy_regression.data import FrozenOrder, fixed_subset_indices, load_pool, 
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
 from noisy_regression.references import reference_report
+from noisy_regression.tracking import TrackingConfig, initialize_tracking
 
 
 @dataclass(frozen=True)
 class TrainConfig:
     batch_size: int = 64
-    micro_batch_size: int = 16
+    micro_batch_size: int = 64
     max_steps: int = 10_000
     eval_interval: int = 500
     learning_rate: float = 5e-4
@@ -172,7 +173,7 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     }
 
 
-def train(data_path, output_path, config, model_config, resume=None):
+def train(data_path, output_path, config, model_config, resume=None, tracking_config=None):
     started = time.perf_counter()
     torch.set_num_threads(config.cpu_threads)
     torch.use_deterministic_algorithms(True)
@@ -245,14 +246,22 @@ def train(data_path, output_path, config, model_config, resume=None):
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
-    write_json(output_path / "references.json", reference_report(splits["eval"]))
+    references = reference_report(splits["eval"])
+    write_json(output_path / "references.json", references)
     save_codec(output_path)
     metrics_path = output_path / "metrics.jsonl"
+    tracker = None
+    if tracking_config is not None:
+        state_before_tracking = rng_state()
+        tracker = initialize_tracking(tracking_config, output_path, manifest, metadata, references)
+        restore_rng(state_before_tracking)
 
     def emit(event):
         event["elapsed_seconds"] = previous_elapsed + time.perf_counter() - started
         with metrics_path.open("a") as stream:
             stream.write(json.dumps(event, allow_nan=False) + "\n")
+        if tracker is not None:
+            tracker.record(event)
         if event["kind"] == "evaluation":
             print(
                 json.dumps(
@@ -330,6 +339,8 @@ def train(data_path, output_path, config, model_config, resume=None):
         "split_role": metadata["split_role"],
     }
     write_json(output_path / "summary.json", summary)
+    if tracker is not None:
+        tracker.finish(summary)
     print(json.dumps(summary, indent=2), flush=True)
     return summary
 
@@ -339,6 +350,9 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--use-wandb", action="store_true")
+    parser.add_argument("--project-name", default="noisy-regression-sft")
+    parser.add_argument("--experiment-name", default="qwen2_1m_fixed100k_sft_10000_bs64x1")
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )
@@ -347,7 +361,8 @@ def main():
     args = vars(parser.parse_args())
     data, output, resume = args.pop("data"), args.pop("output"), args.pop("resume")
     model_config = ModelConfig(**json.loads(args.pop("model_config_json")))
-    train(data, output, TrainConfig(**args), model_config, resume)
+    tracking = TrackingConfig(args.pop("use_wandb"), args.pop("project_name"), args.pop("experiment_name"))
+    train(data, output, TrainConfig(**args), model_config, resume, tracking)
 
 
 if __name__ == "__main__":

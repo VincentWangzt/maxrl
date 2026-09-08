@@ -27,10 +27,12 @@ heads/two KV heads, MLP size 512, context capacity 512, RoPE theta 1,000,000,
 RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal attention, no
 dropout/sliding window/EOS. Architecture values are explicitly passed from the
 configuration block in `sft.sh`. The expected parameter count is **988,032**;
-the run computes the actual count and records it in `manifest.json`.
+the focused CPU checks and first GPU run both verified this count. Each run records it in `manifest.json`.
 
-Training uses exactly 10,000 updates, effective batch 64, microbatch 16, four
-accumulation rounds, and 640,000 presentations (6.4 pool passes). Shuffling spans
+Training uses exactly 10,000 updates, effective batch 64, microbatch 64, **one
+forward/backward pass per update (no accumulation)**, and 640,000 presentations
+(6.4 pool passes). The original run was launched with microbatch 16 and four
+accumulation rounds; it was left unchanged at the user's request. Shuffling spans
 epoch boundaries without dropping or regenerating examples. AdamW uses LR
 `5e-4`, betas `(0.9,0.95)`, epsilon `1e-8`, weight decay `0.01`, 200 warmup
 updates then constant LR, and gradient norm clipping at 1.0. Update `s`, counted
@@ -58,11 +60,29 @@ bash noisy-regression/evaluate.sh
 Each launcher has its own paths, experiment values and environment block; there
 is no shared `config.sh` and no ambient experiment-setting overrides. GPU work
 fails if the explicitly selected GPU has a compute process. Launchers source
-the repository `.env` using the existing convention; this experiment writes
-local JSON/NPZ logs and does not require an external tracking service. Never
-print credentials. The existing server `.venv` must provide PyTorch,
+the repository `.env` using the existing convention. `sft.sh` enables online
+W&B logging in project `noisy-regression-sft` and requires `WANDB_API_KEY` from
+the environment or `.env`, exactly as the maze launcher does. Never print
+credentials. Local JSON/NPZ logs and checkpoints remain available as well.
+The existing server `.venv` must provide PyTorch,
 Transformers with Qwen2/`DynamicCache.batch_repeat_interleave`, NumPy, SciPy,
-Matplotlib and pytest. Exact installed versions are captured with each run.
+Matplotlib, W&B and pytest. Exact core installed versions are captured with each run.
+
+The current launcher's run name is `qwen2_1m_fixed100k_sft_10000_bs64x1`.
+The original `qwen2_1m_fixed100k_sft_10000` run keeps its 16×4 configuration and
+local logging. No restart or second training run is triggered by editing the
+launchers. `evaluate.sh` targets the current `bs64x1` run name; select the
+original checkpoint explicitly to reevaluate the first run.
+
+W&B records configuration, dataset hashes, training loss/LR/gradient norm,
+fixed-subset training NLL, held-out likelihood, separately named exact and
+generated pass@k, uncertainty, diagnostics and reference curves. Optimization
+and evaluation events at the same step are combined into one history row;
+that row is flushed at the next logged step or at completion. This avoids W&B
+discarding an evaluation after an already committed training step. The run ID
+and URL are saved in `wandb_run.json`. A resumed training invocation starts a
+new W&B run with `resume_from` identifying the source checkpoint; numerical
+resume state and the original logs are preserved.
 
 Data preparation refuses an existing output directory. Training and standalone
 evaluation also require new output directories. To resume, set
@@ -131,11 +151,12 @@ or architecture adequacy claim is assumed.
   content SHA-256, file SHA-256 and the train/eval prompt-overlap audit. File
   hashes verify the stored archive; content hashes identify deterministic
   arrays independently of archive container metadata.
-- Run: `noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000/` with
+- Current launcher output: `noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1/` with
   `manifest.json`, `references.json`, `metrics.jsonl`, `evaluation-*.npz`,
   `checkpoint-00000` through `checkpoint-10000`, `best_checkpoint.json`,
   `summary.json`, `report.md`, `learning_curves.png` and `pass_at_k.png`.
-  Step 0 is retained and eligible for best-checkpoint selection.
+  Step 0 is retained and eligible for best-checkpoint selection. The original
+  run uses `qwen2_1m_fixed100k_sft_10000/` without the `bs64x1` suffix.
 - Seeds: training data 1729; evaluation data 2718; model/global 3141;
   training order 1618; fixed subsets 5772; completion sampling 8119 + step.
 
