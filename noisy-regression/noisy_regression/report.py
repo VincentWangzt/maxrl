@@ -8,8 +8,18 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
+from noisy_regression.data import load_pool, subset
 from noisy_regression.metrics import KS
+from noisy_regression.references import reference_report
+
+REFERENCE_STYLES = {
+    "uniform_256": ("Uniform 256", "#a1a1aa", ":"),
+    "query_only_continuous_optimistic": ("Query-only (continuous)", "#64748b", "--"),
+    "bayesian_continuous_optimistic": ("Bayesian (continuous, optimistic)", "#168575", "--"),
+    "ridge_decoded_gaussian_approximation": ("Ridge (decoded, approximate)", "#9e5bb5", ":"),
+}
 
 
 def render_report(run):
@@ -32,21 +42,30 @@ def render_report(run):
         "bayesian_continuous_optimistic",
         "ridge_decoded_gaussian_approximation",
     ):
-        axes[0].axhline(references[name]["answer_nll"]["mean"], linestyle="--", alpha=0.6, label=name.replace("_", " "))
+        label, color, style = REFERENCE_STYLES[name]
+        axes[0].axhline(references[name]["answer_nll"]["mean"], linestyle=style, color=color, alpha=0.8, label=label)
     axes[0].set(xlabel="Optimizer steps", ylabel="NLL (nats / complete answer)")
     axes[0].legend(fontsize=7)
     for k in (1, 16, 256):
         axes[1].plot(
             steps,
             [event["eval"]["exact_pass"][str(k)]["mean"] for event in evaluations],
-            label=f"Exact pass@{k} (all 1024)",
+            label=f"Exact pass@{k} (all {metadata['config']['eval_count']})",
         )
-    axes[1].set(xlabel="Optimizer steps", ylabel="Exact pass@k", ylim=(0, 1))
+    axes[1].set(xlabel="Optimizer steps", ylabel="Exact pass@k (log scale)", yscale="log", ylim=(1e-3, 1))
     axes[1].legend(fontsize=8)
     fig.savefig(run / "learning_curves.png", dpi=180)
     plt.close(fig)
     fig, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
     generation = final["eval"]["generation"]
+    generation_references = references
+    if generation["prompts"] < metadata["config"]["eval_count"]:
+        # Reference overlays use precisely the same tasks as sampled curves,
+        # including when rendering intermediate 128-prompt evaluations.
+        pools, _ = load_pool(manifest["data_path"])
+        with np.load(run / f"evaluation-{final['step']:05d}.npz", allow_pickle=False) as archive:
+            selected = subset(pools["eval"], archive["generation_indices"])
+        generation_references = reference_report(selected)
     axis.plot(
         KS,
         [generation["exact_pass_same_subset"][str(k)]["mean"] for k in KS],
@@ -66,13 +85,22 @@ def render_report(run):
         "bayesian_continuous_optimistic",
         "ridge_decoded_gaussian_approximation",
     ):
+        label, color, style = REFERENCE_STYLES[name]
         axis.plot(
             KS,
-            [references[name]["exact_pass"][str(k)]["mean"] for k in KS],
-            linestyle="--",
-            label=name.replace("_", " "),
+            [generation_references[name]["exact_pass"][str(k)]["mean"] for k in KS],
+            linestyle=style,
+            color=color,
+            label=label,
         )
-    axis.set(xscale="log", xlabel="k", ylabel="pass@k", ylim=(0, 1))
+    axis.set(
+        xscale="log",
+        xlabel="k",
+        ylabel="pass@k",
+        ylim=(0, 1),
+        title=f"Same {generation['prompts']} held-out prompts, step {final['step']:,}",
+    )
+    axis.set_xticks(KS, [str(k) for k in KS])
     axis.legend(fontsize=7)
     fig.savefig(run / "pass_at_k.png", dpi=180)
     plt.close(fig)
