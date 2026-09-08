@@ -19,12 +19,14 @@ class DatasetConfig:
     eval_seed: int = 2718
     dimension: int = 4
     observations: int = 16
-    sigma: float = 0.5
+    sigma: float = 0.5  # Shared standard deviation; context/query draws are independent.
     capacity: int = 512
 
     def validate(self):
-        if (self.dimension, self.observations, self.sigma, self.capacity) != (4, 16, 0.5, 512):
-            raise ValueError("This experiment requires d=4, n=16, sigma=0.5, capacity=512")
+        if (self.dimension, self.observations, self.capacity) != (4, 16, 512):
+            raise ValueError("This experiment requires d=4, n=16, capacity=512")
+        if not np.isfinite(self.sigma) or self.sigma <= 0:
+            raise ValueError("Require finite sigma > 0 for both context and query noise")
         if (
             min(self.train_count, self.eval_count) < 1
             or self.train_seed == self.eval_seed

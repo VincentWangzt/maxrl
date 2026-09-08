@@ -4,6 +4,7 @@ import numpy as np
 from scipy.special import log_ndtr
 
 from noisy_regression.codec import MIDPOINTS, decode, encode
+from noisy_regression.data import DatasetConfig
 from noisy_regression.metrics import distribution_summary
 
 
@@ -21,18 +22,24 @@ def gaussian_bin_log_probs(mean, variance):
     return log_large + np.log(-np.expm1(log_small - log_large))
 
 
-def bayesian_predictive(context_x, context_y, query_x, sigma=0.5):
+def bayesian_predictive(context_x, context_y, query_x, sigma):
+    if not np.isfinite(sigma) or sigma <= 0:
+        raise ValueError("Require finite shared noise sigma > 0")
     dimension = context_x.shape[-1]
-    precision = dimension * np.eye(dimension) + np.swapaxes(context_x, -1, -2) @ context_x / sigma**2
-    chol = np.linalg.cholesky(precision)
-    rhs = np.einsum("bnd,bn->bd", context_x, context_y) / sigma**2
+    regularized_gram = np.swapaxes(context_x, -1, -2) @ context_x + dimension * sigma**2 * np.eye(dimension)
+    chol = np.linalg.cholesky(regularized_gram)
+    rhs = np.einsum("bnd,bn->bd", context_x, context_y)
     intermediate = np.linalg.solve(chol, rhs[..., None])
     posterior_mean = np.linalg.solve(chol.swapaxes(-1, -2), intermediate)[..., 0]
     projected = np.linalg.solve(chol, query_x[..., None])[..., 0]
-    return np.einsum("bd,bd->b", query_x, posterior_mean), sigma**2 + np.square(projected).sum(-1)
+    return (
+        np.einsum("bd,bd->b", query_x, posterior_mean),
+        sigma**2 + sigma**2 * np.square(projected).sum(-1),
+    )
 
 
-def reference_distributions(arrays):
+def reference_distributions(arrays, config: DatasetConfig):
+    config.validate()
     count = len(arrays["tokens"])
     result = {"uniform_256": np.full((count, 256), -np.log(256))}
     for decoded in (False, True):
@@ -40,14 +47,17 @@ def reference_distributions(arrays):
         if decoded:
             x, y, query = decode(encode(x)), decode(encode(y)), decode(encode(query))
         query_name = "query_only_decoded_plugin_approximation" if decoded else "query_only_continuous_optimistic"
-        result[query_name] = gaussian_bin_log_probs(np.zeros(count), 0.5**2 + (query**2).sum(-1) / 4)
-        mean, variance = bayesian_predictive(x, y, query)
+        result[query_name] = gaussian_bin_log_probs(
+            np.zeros(count), config.sigma**2 + (query**2).sum(-1) / config.dimension
+        )
+        mean, variance = bayesian_predictive(x, y, query, config.sigma)
         bayes_name = "ridge_decoded_gaussian_approximation" if decoded else "bayesian_continuous_optimistic"
         result[bayes_name] = gaussian_bin_log_probs(mean, variance)
     return result
 
 
-def reference_report(arrays):
+def reference_report(arrays, config: DatasetConfig):
     return {
-        name: distribution_summary(log_probs, arrays) for name, log_probs in reference_distributions(arrays).items()
+        name: distribution_summary(log_probs, arrays)
+        for name, log_probs in reference_distributions(arrays, config).items()
     }

@@ -11,9 +11,10 @@ The scratch Qwen2 model has **988,032 trainable parameters**. Training used GPU 
 
 The launcher was subsequently changed, as requested, to **64 × 1 with online
 W&B logging** (`b2aba57`). Those changes did not affect this completed run, which
-retains its original configuration and local logs. A second training run has
-not been launched. The next launch uses run name
-`qwen2_1m_fixed100k_sft_10000_bs64x1` and W&B project `noisy-regression-sft`.
+retains its original configuration and local logs. The current launchers select
+a follow-up with shared context/query sigma=0.1, run name
+`qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1`, and W&B project `noisy-regression-sft`.
+All results below are for the original sigma=0.5 experiment.
 
 ## Learning and reference comparisons
 

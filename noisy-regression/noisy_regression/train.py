@@ -17,7 +17,7 @@ import transformers
 from transformers import AutoModelForCausalLM
 
 from noisy_regression.codec import save_codec
-from noisy_regression.data import FrozenOrder, fixed_subset_indices, load_pool, subset, write_json
+from noisy_regression.data import DatasetConfig, FrozenOrder, fixed_subset_indices, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
 from noisy_regression.references import reference_report
@@ -246,7 +246,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
-    references = reference_report(splits["eval"])
+    references = reference_report(splits["eval"], DatasetConfig(**metadata["config"]))
     write_json(output_path / "references.json", references)
     save_codec(output_path)
     metrics_path = output_path / "metrics.jsonl"

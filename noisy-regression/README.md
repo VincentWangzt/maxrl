@@ -7,14 +7,24 @@ maze tokenizer, rewards, or datasets. All Python execution is on
 The completed first run and reference comparisons are documented in [RESULTS.md](RESULTS.md).
 Metric definitions, normalization choices and a detailed evaluation audit are in [EVALUATION.md](EVALUATION.md).
 
-## Confirmed first experiment
+## Experiment settings
 
 The user confirmed **GPU 1** and **100,000 frozen training examples**. There are
 1,024 held-out evaluation examples and no test split. Each example draws a new
 `w ~ N(0,I/4)`, 16 context inputs and one query from `N(0,I_4)`, and independent
-context/query noise with standard deviation 0.5. Continuous outcomes are formed
-before quantization. All latents, continuous arrays, noises and targets are saved
-once, including the noisy query outcome.
+context/query noise with one shared standard deviation. The first run used
+**sigma=0.5**; the current launchers use **sigma=0.1 for both context and query**.
+The draws are independent; sharing sigma means the same noise level, not the
+same realized noise. Continuous outcomes are formed before quantization. All
+latents, continuous arrays, noises and targets are saved once, including the
+noisy query outcome.
+
+The lower-noise pool uses the original data seeds, keeping latent coefficients,
+inputs and noiseless signals identical while scaling both noise arrays by 0.2.
+It has its own directory, `fixed_d4_n16_100k_sigma0p1`, and does not overwrite
+the first pool. `prepare.sh` owns the shared `SIGMA`; Bayesian/ridge and query-only
+references read that value from dataset metadata. This Gaussian-reference
+implementation requires positive sigma; this run selects 0.1 rather than zero.
 
 Every scalar uses the inclusive 256-center grid on `[-5,5]`, midpoint ties toward
 the larger index, then two base-16 digit IDs. The visible sequence is 205 tokens;
@@ -71,10 +81,10 @@ The existing server `.venv` must provide PyTorch,
 Transformers with Qwen2/`DynamicCache.batch_repeat_interleave`, NumPy, SciPy,
 Matplotlib, W&B and pytest. Exact core installed versions are captured with each run.
 
-The current launcher's run name is `qwen2_1m_fixed100k_sft_10000_bs64x1`.
+The current launcher's run name is `qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1`.
 The original `qwen2_1m_fixed100k_sft_10000` run keeps its 16×4 configuration and
 local logging. No restart or second training run is triggered by editing the
-launchers. `evaluate.sh` targets the current `bs64x1` run name; select the
+launchers. `evaluate.sh` targets the current `bs64x1_sigma0p1` run name; select the
 original checkpoint explicitly to reevaluate the first run.
 
 W&B records configuration, dataset hashes, training loss/LR/gradient norm,
@@ -162,19 +172,19 @@ or architecture adequacy claim is assumed.
 
 ## Artifacts and seeds
 
-- Dataset: `noisy-regression/data/fixed_d4_n16_100k/{train,eval}.npz`,
+- Current dataset: `noisy-regression/data/fixed_d4_n16_100k_sigma0p1/{train,eval}.npz`,
   `metadata.json`, `codec.json`. NPZ arrays include continuous inputs/outcomes,
   coefficients, noise, noiseless query signal, token sequences, stable IDs and
   prompt hashes. Metadata includes clipping counts, exact configuration,
   content SHA-256, file SHA-256 and the train/eval prompt-overlap audit. File
   hashes verify the stored archive; content hashes identify deterministic
   arrays independently of archive container metadata.
-- Current launcher output: `noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1/` with
+- Current launcher output: `noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1/` with
   `manifest.json`, `references.json`, `metrics.jsonl`, `evaluation-*.npz`,
   `checkpoint-00000` through `checkpoint-10000`, `best_checkpoint.json`,
   `summary.json`, `report.md`, `learning_curves.png` and `pass_at_k.png`.
   Step 0 is retained and eligible for best-checkpoint selection. The original
-  run uses `qwen2_1m_fixed100k_sft_10000/` without the `bs64x1` suffix.
+  run uses `qwen2_1m_fixed100k_sft_10000/`; its dataset is `fixed_d4_n16_100k/`.
 - Seeds: training data 1729; evaluation data 2718; model/global 3141;
   training order 1618; fixed subsets 5772; completion sampling 8119 + step.
 
@@ -184,7 +194,7 @@ rendered while the run is in progress on the server:
 ```bash
 CUDA_VISIBLE_DEVICES='' PYTHONPATH="$PWD/noisy-regression:$PWD" \
   .venv/bin/python -m noisy_regression.report \
-  --run noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000
+  --run noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1
 ```
 
 Focused CPU validation covers codec endpoints/ties/clipping/round trips,

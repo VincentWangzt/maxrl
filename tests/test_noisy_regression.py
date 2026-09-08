@@ -135,6 +135,37 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
         build_sequences(arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], 204)
 
 
+def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance():
+    config = DatasetConfig(train_count=8, eval_count=4)
+    baseline = generate_split(config, "eval")
+    for sigma in (0.1, 0.2):
+        changed = generate_split(replace(config, sigma=sigma), "eval")
+        for name in ("w", "context_x", "query_x", "query_signal", "ids"):
+            np.testing.assert_array_equal(changed[name], baseline[name])
+        for name in ("context_noise", "query_noise"):
+            np.testing.assert_allclose(changed[name], baseline[name] * (sigma / config.sigma))
+        assert not np.array_equal(changed["tokens"][:, :193], baseline["tokens"][:, :193])
+        np.testing.assert_array_equal(changed["tokens"][:, 193:203], baseline["tokens"][:, 193:203])
+        assert not np.array_equal(changed["tokens"][:, -2:], baseline["tokens"][:, -2:])
+
+    context_x = np.tile(np.eye(4), (1, 4, 1))
+    weights = np.array([0.2, -0.3, 0.4, 0.1])
+    context_y = context_x @ weights
+    query_x = np.ones((1, 4))
+    for sigma in (0.5, 0.1):
+        mean, variance = bayesian_predictive(context_x, context_y, query_x, sigma)
+        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2)])
+        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (1 + sigma**2)])
+    low_noise_config = replace(config, sigma=0.1)
+    lower = reference_distributions(baseline, low_noise_config)
+    original = reference_distributions(baseline, config)
+    assert not np.allclose(lower["query_only_continuous_optimistic"], original["query_only_continuous_optimistic"])
+    assert not np.allclose(lower["bayesian_continuous_optimistic"], original["bayesian_continuous_optimistic"])
+    for value in (-0.1, np.nan, 0.0, np.inf):
+        with pytest.raises(ValueError, match="sigma"):
+            replace(config, sigma=value).validate()
+
+
 def test_epoch_order_freezes_complete_examples(arrays):
     stream = FrozenOrder(8, 19)
     first, second = stream.take(8), stream.take(8)
@@ -226,14 +257,14 @@ def test_exact_estimator_boundaries_and_sampling():
 
 
 def test_reference_normalization_and_analytic_cases(arrays):
-    mean, variance = bayesian_predictive(np.zeros((2, 16, 4)), np.zeros((2, 16)), np.ones((2, 4)))
+    mean, variance = bayesian_predictive(np.zeros((2, 16, 4)), np.zeros((2, 16)), np.ones((2, 4)), 0.5)
     np.testing.assert_allclose(mean, 0)
     np.testing.assert_allclose(variance, 1.25)
     gaussian = gaussian_bin_log_probs(np.array([-100.0, 0.0, 100.0]), np.array([0.25, 0.25, 0.25]))
     assert np.isfinite(gaussian).all()
     np.testing.assert_allclose(np.exp(gaussian).sum(1), 1, atol=1e-13)
     assert np.exp(gaussian[0, 0]) == 1 and np.exp(gaussian[-1, -1]) == 1
-    for name, log_probs in reference_distributions(arrays).items():
+    for name, log_probs in reference_distributions(arrays, DatasetConfig()).items():
         report = distribution_summary(log_probs, arrays)
         assert report["max_normalization_error"] < 1e-12
         if name == "uniform_256":
@@ -369,7 +400,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
 
     monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=initialize))
     pool = tmp_path / "data"
-    prepare(pool, DatasetConfig(train_count=8, eval_count=4))
+    prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.1))
     assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 64
     config = TrainConfig(
         batch_size=4,
@@ -389,6 +420,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
     summary = train(pool, tmp_path / "run", config, ModelConfig(), tracking_config=tracking)
     assert summary["presentations"] == 8
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
+    assert init_arguments["config"]["dataset"]["sigma"] == 0.1
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
     assert [step for step, _ in recorded_run.history] == [0, 1, 2]
     for step, values in recorded_run.history:

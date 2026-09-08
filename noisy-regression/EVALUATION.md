@@ -39,8 +39,9 @@ then samples digit pairs from those distributions on CPU. Sampling seed is
 
 The completed run used a 988,032-parameter scratch Qwen2, 10,000 updates and
 640,000 presentations (6.4 pool passes), with batch 64 implemented as 16×4.
-It took 41.50 minutes. The current launcher uses 64×1 and enables W&B; those
-settings have not been used for a second training run.
+It took 41.50 minutes. The current launcher uses 64×1, enables W&B, and selects
+shared context/query sigma=0.1 for the follow-up experiment. The numbers in this
+report describe the original sigma=0.5 run.
 
 ## 1. Should MSE be normalized?
 

@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from noisy_regression.data import load_pool, subset
+from noisy_regression.data import DatasetConfig, load_pool, subset
 from noisy_regression.metrics import KS
 from noisy_regression.references import reference_report
 
@@ -27,6 +27,7 @@ def render_report(run):
     manifest = json.loads((run / "manifest.json").read_text())
     references = json.loads((run / "references.json").read_text())
     metadata = json.loads((run / "dataset_metadata.json").read_text())
+    dataset_config = DatasetConfig(**metadata["config"])
     events = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
     evaluations = [event for event in events if event["kind"] == "evaluation"]
     if not evaluations:
@@ -66,7 +67,7 @@ def render_report(run):
         pools, _ = load_pool(manifest["data_path"])
         with np.load(run / f"evaluation-{final['step']:05d}.npz", allow_pickle=False) as archive:
             selected = subset(pools["eval"], archive["generation_indices"])
-        generation_references = reference_report(selected)
+        generation_references = reference_report(selected, dataset_config)
     axis.plot(
         KS,
         [generation["exact_pass_same_subset"][str(k)]["mean"] for k in KS],
@@ -109,6 +110,9 @@ def render_report(run):
         "# Fixed-pool noisy regression SFT",
         "",
         f"Status: {'completed' if summary else 'in progress'}; last evaluated step {final['step']:,}. Trainable parameters: {manifest['parameter_count']:,}.",
+        "",
+        f"Shared context/query noise standard deviation: {dataset_config.sigma:g}. "
+        "Reference predictors use these dataset noise settings.",
         "",
         f"Observed presentations: {final['presentations']:,}. "
         f"Recorded elapsed time: {(summary or final)['elapsed_seconds'] / 60:.2f} minutes. "

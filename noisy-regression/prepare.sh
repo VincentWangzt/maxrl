@@ -5,14 +5,14 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k"
+OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k_sigma0p1"
 TRAIN_COUNT=100000
 EVAL_COUNT=1024
 TRAIN_SEED=1729
 EVAL_SEED=2718
 DIMENSION=4
 OBSERVATIONS=16
-SIGMA=0.5
+SIGMA=0.1 # Same standard deviation for independent context and query noise.
 CAPACITY=512
 GPU_ID="" # Dataset generation is CPU-only.
 CPU_THREADS=4

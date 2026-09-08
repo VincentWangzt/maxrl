@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k"
-RUN_NAME="qwen2_1m_fixed100k_sft_10000_bs64x1"
+DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k_sigma0p1"
+RUN_NAME="qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1"
 CHECKPOINT="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/checkpoint-10000"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/reevaluation-final"
 GPU_ID=1
