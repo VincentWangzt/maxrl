@@ -69,9 +69,25 @@ values and paired exact-versus-sampled differences.
 
 Final first-token NLL was **2.03625**, second-token conditional NLL **2.76235**,
 and predicted entropy **5.01296 nats/answer**. Maximum distribution normalization
-error was **2.28e-7**. Predictive-mean MSE was **1.31621** against continuous noisy
+error was **2.28e-7**. Exact-distribution predictive-mean MSE was **1.31621** against continuous noisy
 outcomes, **1.31107** against decoded target centers, and **1.07572** against the
 continuous noiseless signal.
+
+The **mean of 256 sampled predictions** has MSE **1.085008 ± 0.060132 prompt SE**
+against the continuous noiseless signal over all 1,024 final evaluation prompts
+(approximate 95% interval: **[0.967149, 1.202866]**). Each completion is decoded
+to its scalar grid center; the 256 values are averaged within each prompt before
+squaring the error against `w·x_query`. This differs from averaging 256 squared
+prediction errors. Finite sampling makes this metric differ from the
+exact-distribution predictive-mean MSE above.
+
+This metric was added after training in commit `00b136c` and computed for all
+21 evaluations using their original saved completions, without new sampling.
+Periodic steps use their original 128-prompt generation subset; the final step
+uses all 1,024 prompts. JSONL and checkpoint metrics now include
+`eval.generation.sampled_mean_noiseless_signal_mse`; the backfill history and
+provenance are recorded in `sampled_mean_mse_backfill.json`. The original metrics
+are retained on the server in `metrics_before_sampled_mean_mse/`.
 
 Train clipping counts were 6/6,400,000 context-input scalars,
 627/1,600,000 context outcomes, 1/400,000 query-input scalars, and 39/100,000
@@ -109,6 +125,8 @@ W&B changes, two targeted CPU checks passed for same-step W&B history merging,
 single-microbatch training, and checkpoint resume. Ruff and shell syntax checks
 passed. W&B 0.28.0 is installed and its credential is configured; W&B recording
 was tested with a stub SDK run, without uploading the completed experiment.
+Three targeted CPU checks passed after the sampled-mean MSE addition, covering
+the analytic calculation, saved subset/final metrics, and W&B scalar logging.
 
 There is one held-out evaluation pool, reused for selection, and **no independent
 final test split**. Low exact-match probability alone is not evidence that the
