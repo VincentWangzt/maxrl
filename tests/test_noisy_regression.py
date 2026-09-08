@@ -10,14 +10,13 @@ import numpy as np
 import pytest
 import torch
 from noisy_regression.codec import (
-    ANSWER,
     BOS,
     CENTERS,
     DELTA,
     MIDPOINTS,
     PROMPT_LENGTH,
-    QUERY,
     SEQUENCE_LENGTH,
+    VOCAB,
     X,
     Y,
     build_sequences,
@@ -25,7 +24,15 @@ from noisy_regression.codec import (
     encode,
     quantize,
 )
-from noisy_regression.data import DatasetConfig, FrozenOrder, array_hash, generate_split, load_pool, prepare
+from noisy_regression.data import (
+    DatasetConfig,
+    FrozenOrder,
+    array_hash,
+    fixed_training_indices,
+    generate_split,
+    load_pool,
+    prepare,
+)
 from noisy_regression.evaluate import evaluate
 from noisy_regression.evaluate_baseline import evaluate_baseline
 from noisy_regression.metrics import (
@@ -56,6 +63,7 @@ from scipy.stats import binom
 @pytest.fixture(autouse=True)
 def cpu_only():
     torch.set_num_threads(1)
+    # Fixed randomness is confined to CPU tests, never experiment launchers.
     torch.manual_seed(42)
     torch.use_deterministic_algorithms(True)
 
@@ -85,40 +93,66 @@ def test_codec_endpoints_midpoints_roundtrips_and_finite():
     np.testing.assert_array_equal(quantize(z), np.clip(np.floor((z + 5) / DELTA + 0.5), 0, 255))
 
 
-def test_frozen_reproducible_splits_and_hashes(tmp_path):
+def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     config = DatasetConfig(train_count=8, eval_count=4)
     train_arrays, eval_arrays = generate_split(config, "train"), generate_split(config, "eval")
-    assert array_hash(train_arrays) == array_hash(generate_split(config, "train"))
-    assert array_hash(eval_arrays) == array_hash(generate_split(config, "eval"))
+    assert array_hash(train_arrays) != array_hash(generate_split(config, "train"))
+    assert array_hash(eval_arrays) != array_hash(generate_split(config, "eval"))
     assert not set(train_arrays["prompt_hashes"]) & set(eval_arrays["prompt_hashes"])
     np.testing.assert_array_equal(
         train_arrays["context_y"],
         np.einsum("bnd,bd->bn", train_arrays["context_x"], train_arrays["w"]) + train_arrays["context_noise"],
     )
     np.testing.assert_array_equal(train_arrays["query_y"], train_arrays["query_signal"] + train_arrays["query_noise"])
-    changed = generate_split(replace(config, train_count=20), "eval")
-    assert array_hash(changed) == array_hash(eval_arrays)
     directory = tmp_path / "pool"
     metadata = prepare(directory, config)
     pools, loaded_metadata = load_pool(directory)
     assert loaded_metadata == metadata
-    assert array_hash(pools["train"]) == array_hash(train_arrays)
+    reloaded, _ = load_pool(directory)
+    assert array_hash(pools["train"]) == array_hash(reloaded["train"])
+    assert array_hash(pools["eval"]) == array_hash(reloaded["eval"])
+    assert array_hash(pools["train"]) != array_hash(train_arrays)
     assert not pools["train"]["query_y"].flags.writeable
     assert set(metadata["splits"]) == {"train", "eval"}
+    assert metadata["schema_version"] == 2
+    assert not any("seed" in name for name in metadata["config"])
+    assert not set(pools["train"]["prompt_hashes"]) & set(pools["eval"]["prompt_hashes"])
     with pytest.raises(FileExistsError):
         prepare(directory, config)
     with (directory / "train.npz").open("ab") as stream:
         stream.write(b"tamper")
     with pytest.raises(ValueError, match="modified"):
         load_pool(directory)
-    with pytest.raises(ValueError):
-        generate_split(replace(config, eval_seed=config.train_seed), "train")
+    metadata["schema_version"] = 1
+    (directory / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="schema mismatch"):
+        load_pool(directory)
+
+
+def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
+    original = np.random.default_rng
+    calls = []
+
+    def entropy_rng(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(np.random, "default_rng", entropy_rng)
+    generate_split(DatasetConfig(train_count=8, eval_count=4), "train")
+    FrozenOrder(8)
+    indices = fixed_training_indices(100, 8)
+    assert len(np.unique(indices)) == 8 and ((indices >= 0) & (indices < 100)).all()
+    assert calls == [((), {}), ((), {}), ((), {})]
+    assert not any("seed" in name for name in TrainConfig.__dataclass_fields__)
+    assert not any("seed" in name for name in DatasetConfig.__dataclass_fields__)
 
 
 def test_prompt_layout_and_no_latent_leakage(arrays):
     tokens = arrays["tokens"]
     assert tokens.shape == (8, 205)
-    assert (tokens[:, 0] == BOS).all() and (tokens[:, 193] == QUERY).all() and (tokens[:, 202] == ANSWER).all()
+    assert (tokens[:, 0] == BOS).all() and (tokens[:, 193] == X).all() and (tokens[:, 202] == Y).all()
+    assert len(VOCAB) == 20 and "[QUERY]" not in VOCAB and "[ANSWER]" not in VOCAB
+    assert tokens.max() < len(VOCAB)
     for i in range(16):
         offset = 1 + 12 * i
         assert (tokens[:, offset] == X).all() and (tokens[:, offset + 9] == Y).all()
@@ -136,8 +170,11 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
         build_sequences(arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], 204)
 
 
-def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance():
-    config = DatasetConfig(train_count=8, eval_count=4)
+def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(monkeypatch):
+    # Replay draws only inside this test to isolate the effect of shared sigma.
+    original_rng = np.random.default_rng
+    monkeypatch.setattr(np.random, "default_rng", lambda: original_rng(2718))
+    config = DatasetConfig(train_count=8, eval_count=4, sigma=0.5)
     baseline = generate_split(config, "eval")
     for sigma in (0.1, 0.2):
         changed = generate_split(replace(config, sigma=sigma), "eval")
@@ -168,16 +205,16 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
 
 
 def test_epoch_order_freezes_complete_examples(arrays):
-    stream = FrozenOrder(8, 19)
-    first, second = stream.take(8), stream.take(8)
-    assert set(first) == set(second) == set(range(8))
+    stream = FrozenOrder(128)
+    first, second = stream.take(128), stream.take(128)
+    assert set(first) == set(second) == set(range(128))
     assert not np.array_equal(first, second)
     before = array_hash(arrays)
     stream.take(23)
-    assert stream.presentations == 39
+    assert stream.presentations == 279
     state = stream.state_dict()
     expected = stream.take(29)
-    restored = FrozenOrder(8, 999)
+    restored = FrozenOrder(128)
     restored.load_state_dict(state)
     np.testing.assert_array_equal(expected, restored.take(29))
     assert array_hash(arrays) == before
@@ -187,7 +224,7 @@ def test_answer_only_shift_and_restricted_loss(arrays):
     tokens = torch.tensor(arrays["tokens"].astype(np.int64))
     labels = answer_labels(tokens)
     assert (labels[:, :-2] == -100).all() and torch.equal(labels[:, -2:], tokens[:, -2:])
-    logits = torch.zeros(8, SEQUENCE_LENGTH, 22, requires_grad=True)
+    logits = torch.zeros(8, SEQUENCE_LENGTH, len(VOCAB), requires_grad=True)
     nll = answer_nll_from_logits(logits, tokens)
     torch.testing.assert_close(nll.sum(1), torch.full((8,), math.log(256)))
     nll.sum(1).mean().backward()
@@ -203,7 +240,7 @@ def test_answer_only_shift_and_restricted_loss(arrays):
 
 def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     model = create_model(ModelConfig()).eval()
-    assert sum(p.numel() for p in model.parameters()) == 988032
+    assert sum(p.numel() for p in model.parameters()) == 987776
     assert model.get_input_embeddings().weight.data_ptr() == model.get_output_embeddings().weight.data_ptr()
     assert (
         model.config.eos_token_id is None
@@ -349,15 +386,19 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
     scheduler = make_scheduler(optimizer, config.warmup_steps)
-    order = FrozenOrder(8, config.order_seed)
+    order = FrozenOrder(8)
     device = torch.device("cpu")
     first_step = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     assert first_step["learning_rate"] == config.learning_rate / 2
     checkpoint = tmp_path / "checkpoint"
-    save_checkpoint(checkpoint, model, optimizer, scheduler, order, 1, config, {}, {}, 0, {})
+    training_indices = np.array([0, 2, 4, 6])
+    save_checkpoint(
+        checkpoint, model, optimizer, scheduler, order, 1, config, {}, {}, 0, {}, training_indices=training_indices
+    )
     expected = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     expected_weights = {name: value.clone() for name, value in model.state_dict().items()}
-    load_checkpoint(checkpoint, model, optimizer, scheduler, order, config, {})
+    restored_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, config, {})
+    np.testing.assert_array_equal(restored_state["train_evaluation_indices"], training_indices)
     actual = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     assert actual == expected
     assert order.presentations == 8
@@ -387,7 +428,7 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     )
     summary = train(pool, tmp_path / "run", config, ModelConfig())
     assert summary["steps"] == 2 and summary["presentations"] == 8
-    assert summary["parameter_count"] == 988032
+    assert summary["parameter_count"] == 987776
     events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     evaluations = [event for event in events if event["kind"] == "evaluation"]
     assert [event["step"] for event in evaluations] == [0, 1, 2]
@@ -428,6 +469,19 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     assert "Conditional sampling" not in rendered
     for filename in ("learning_curves.png", "pass_at_k.png"):
         assert (tmp_path / "run" / filename).stat().st_size > 0
+    # With no subset seed, resume must recover the original saved diagnostic IDs.
+    resumed = tmp_path / "resumed"
+    train(pool, resumed, config, ModelConfig(), resume=tmp_path / "run" / "checkpoint-00001")
+    original_manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    resumed_manifest = json.loads((resumed / "manifest.json").read_text())
+    assert original_manifest["train_evaluation_ids"] == resumed_manifest["train_evaluation_ids"]
+    from safetensors.torch import load_file
+
+    original_weights = load_file(str(tmp_path / "run" / "checkpoint-00002" / "model.safetensors"))
+    resumed_weights = load_file(str(resumed / "checkpoint-00002" / "model.safetensors"))
+    assert original_weights.keys() == resumed_weights.keys()
+    for name, value in original_weights.items():
+        torch.testing.assert_close(value, resumed_weights[name], atol=0, rtol=0)
 
 
 @pytest.fixture

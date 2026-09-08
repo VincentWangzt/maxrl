@@ -5,11 +5,9 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_100k_sigma0p1"
-TRAIN_COUNT=100000
+OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_10m_xy_sigma0p1"
+TRAIN_COUNT=10000000
 EVAL_COUNT=1024
-TRAIN_SEED=1729
-EVAL_SEED=2718
 DIMENSION=4
 OBSERVATIONS=16
 SIGMA=0.1 # Same standard deviation for independent context and query noise.
@@ -31,6 +29,5 @@ export MKL_NUM_THREADS="${CPU_THREADS}"
 cd "${REPO_ROOT}"
 exec python -m noisy_regression.data --output "${OUTPUT_DIR}" \
   --train-count "${TRAIN_COUNT}" --eval-count "${EVAL_COUNT}" \
-  --train-seed "${TRAIN_SEED}" --eval-seed "${EVAL_SEED}" \
   --dimension "${DIMENSION}" --observations "${OBSERVATIONS}" \
   --sigma "${SIGMA}" --capacity "${CAPACITY}"

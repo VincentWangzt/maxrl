@@ -28,18 +28,15 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 class TrainConfig:
     batch_size: int = 64
     micro_batch_size: int = 64
-    max_steps: int = 10_000
+    max_steps: int = 150_000
     eval_interval: int = 500
-    learning_rate: float = 5e-4
+    learning_rate: float = 1e-4
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
     warmup_steps: int = 200
     max_grad_norm: float = 1.0
-    seed: int = 3141
-    order_seed: int = 1618
-    subset_seed: int = 5772
     train_eval_size: int = 1024
     eval_batch_size: int = 32
     device: str = "cuda:0"
@@ -61,8 +58,8 @@ class TrainConfig:
             raise ValueError("Positive sizes required; effective batch must be divisible by microbatch")
         if not 1 <= self.train_eval_size <= len(splits["train"]["tokens"]):
             raise ValueError("Evaluation subset size exceeds its pool")
-        if self.warmup_steps < 0 or min(self.seed, self.order_seed, self.subset_seed) < 0:
-            raise ValueError("Require nonnegative seeds and warmup")
+        if self.warmup_steps < 0:
+            raise ValueError("Require nonnegative warmup")
         if (
             not 0 <= self.beta1 < 1
             or not 0 <= self.beta2 < 1
@@ -89,7 +86,9 @@ def restore_rng(state):
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
-def save_checkpoint(path, model, optimizer, scheduler, order, step, config, metadata, best, elapsed, metrics):
+def save_checkpoint(
+    path, model, optimizer, scheduler, order, step, config, metadata, best, elapsed, metrics, *, training_indices
+):
     path = Path(path)
     temporary = path.with_name(path.name + ".incomplete")
     temporary.mkdir(parents=True, exist_ok=False)
@@ -105,6 +104,7 @@ def save_checkpoint(path, model, optimizer, scheduler, order, step, config, meta
             "order": order.state_dict(),
             "step": step,
             "rng": rng_state(),
+            "train_evaluation_indices": training_indices,
             "best": best,
             "elapsed_seconds": elapsed,
         },
@@ -128,6 +128,14 @@ def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
     # Only load trusted checkpoints produced by this experiment; optimizer/RNG
     # state includes Python and NumPy objects, not just tensors.
     state = torch.load(path / "trainer_state.pt", map_location="cpu", weights_only=False)
+    indices = state["train_evaluation_indices"]
+    if (
+        indices.shape != (config.train_eval_size,)
+        or indices.dtype.kind not in "iu"
+        or len(np.unique(indices)) != len(indices)
+        or np.any((indices < 0) | (indices >= order.count))
+    ):
+        raise ValueError("Invalid checkpoint training-evaluation subset")
     optimizer.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
     order.load_state_dict(state["order"])
@@ -173,9 +181,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     device = select_device(config.device, config.precision)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
+    print(f"Loading and verifying frozen pool: {data_path}", flush=True)
     splits, metadata = load_pool(data_path)
     config.validate(splits)
     output_path = Path(output_path).resolve()
@@ -185,11 +191,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
     scheduler = make_scheduler(optimizer, config.warmup_steps)
-    order = FrozenOrder(len(splits["train"]["tokens"]), config.order_seed)
-    training_indices = fixed_training_indices(
-        len(splits["train"]["tokens"]), config.train_eval_size, config.subset_seed
-    )
-    train_eval = subset(splits["train"], training_indices)
+    order = FrozenOrder(len(splits["train"]["tokens"]))
     step, previous_elapsed = 0, 0.0
     best = {"answer_nll": None, "step": None, "checkpoint": None}
     if resume is not None:
@@ -197,6 +199,10 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         step, previous_elapsed, best = state["step"], state["elapsed_seconds"], state["best"]
         if step >= config.max_steps:
             raise ValueError("Checkpoint has already finished the requested optimizer steps")
+        training_indices = state["train_evaluation_indices"]
+    else:
+        training_indices = fixed_training_indices(len(splits["train"]["tokens"]), config.train_eval_size)
+    train_eval = subset(splits["train"], training_indices)
     versions = {
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -229,8 +235,9 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "resume_from": str(Path(resume).resolve()) if resume else None,
         "train_evaluation_ids": train_eval["ids"].tolist(),
         "deterministic_algorithms": True,
+        "randomness": "Fresh initialization, shuffle and diagnostic subset; no fixed seeds",
         "likelihood_units": "nats per complete two-token answer",
-        "subset_policy": "PCG64(subset_seed): fixed train permutation; evaluation uses the full pool",
+        "subset_policy": "Train subset drawn once per run and checkpointed; evaluation uses the full held-out pool",
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
@@ -317,7 +324,18 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         emit(metrics)
         elapsed = previous_elapsed + time.perf_counter() - started
         save_checkpoint(
-            checkpoint, model, optimizer, scheduler, order, current_step, config, metadata, best, elapsed, metrics
+            checkpoint,
+            model,
+            optimizer,
+            scheduler,
+            order,
+            current_step,
+            config,
+            metadata,
+            best,
+            elapsed,
+            metrics,
+            training_indices=training_indices,
         )
         write_json(output_path / "best_checkpoint.json", best)
         return metrics
@@ -365,7 +383,7 @@ def main():
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--project-name", default="noisy-regression-sft")
-    parser.add_argument("--experiment-name", default="qwen2_1m_fixed100k_sft_10000_bs64x1")
+    parser.add_argument("--experiment-name", default="qwen2_1m_fixed10m_xy_sft_150000_bs64_lr1e-4_sigma0p1")
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )

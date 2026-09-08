@@ -13,13 +13,11 @@ from noisy_regression.codec import PROMPT_LENGTH, build_sequences, save_codec
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    train_count: int = 100_000
+    train_count: int = 10_000_000
     eval_count: int = 1_024
-    train_seed: int = 1729
-    eval_seed: int = 2718
     dimension: int = 4
     observations: int = 16
-    sigma: float = 0.5  # Shared standard deviation; context/query draws are independent.
+    sigma: float = 0.1  # Shared standard deviation; context/query draws are independent.
     capacity: int = 512
 
     def validate(self):
@@ -27,12 +25,8 @@ class DatasetConfig:
             raise ValueError("This experiment requires d=4, n=16, capacity=512")
         if not np.isfinite(self.sigma) or self.sigma <= 0:
             raise ValueError("Require finite sigma > 0 for both context and query noise")
-        if (
-            min(self.train_count, self.eval_count) < 1
-            or self.train_seed == self.eval_seed
-            or min(self.train_seed, self.eval_seed) < 0
-        ):
-            raise ValueError("Require positive pool sizes and distinct nonnegative split seeds")
+        if min(self.train_count, self.eval_count) < 1:
+            raise ValueError("Require positive pool sizes")
 
 
 def write_json(path, value):
@@ -51,7 +45,8 @@ def array_hash(arrays):
     digest = hashlib.sha256()
     for name, value in sorted(arrays.items()):
         digest.update(json.dumps([name, value.dtype.str, value.shape]).encode())
-        digest.update(np.ascontiguousarray(value).tobytes())
+        for start in range(0, len(value), 65_536):
+            digest.update(np.ascontiguousarray(value[start : start + 65_536]).tobytes())
     return digest.hexdigest()
 
 
@@ -59,8 +54,8 @@ def generate_split(config, split):
     config.validate()
     if split not in ("train", "eval"):
         raise ValueError("Only train and held-out eval splits exist")
-    count, seed = (config.train_count, config.train_seed) if split == "train" else (config.eval_count, config.eval_seed)
-    rng = np.random.Generator(np.random.PCG64(seed))
+    count = config.train_count if split == "train" else config.eval_count
+    rng = np.random.default_rng()
     w = rng.normal(size=(count, 4)) / np.sqrt(4)
     context_x = rng.normal(size=(count, 16, 4))
     context_noise = rng.normal(scale=config.sigma, size=(count, 16))
@@ -80,9 +75,9 @@ def generate_split(config, split):
         query_signal=query_signal,
     )
     arrays["tokens"] = build_sequences(context_x, context_y, query_x, query_y, config.capacity)
-    arrays["ids"] = np.array([f"{split}-{seed}-{i:08d}" for i in range(count)])
+    arrays["ids"] = np.array([f"{split}-{i:08d}" for i in range(count)])
     arrays["prompt_hashes"] = np.array(
-        [hashlib.sha256(row[:PROMPT_LENGTH].tobytes()).hexdigest() for row in arrays["tokens"]]
+        [hashlib.sha256(row[:PROMPT_LENGTH].tobytes()).hexdigest() for row in arrays["tokens"]], dtype="S64"
     )
     return arrays
 
@@ -105,14 +100,20 @@ def prepare(directory, config):
     config.validate()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
-    splits = {split: generate_split(config, split) for split in ("train", "eval")}
+    splits = {}
+    for split in ("train", "eval"):
+        print(f"Generating {split} pool with fresh random draws", flush=True)
+        splits[split] = generate_split(config, split)
+        print(f"Generated {len(splits[split]['tokens']):,} {split} examples", flush=True)
     overlap = set(splits["train"]["prompt_hashes"]) & set(splits["eval"]["prompt_hashes"])
     if overlap:
         raise ValueError(f"Found {len(overlap)} overlapping tokenized prompts across splits")
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "config": asdict(config),
-        "rng": "numpy.PCG64; independent train/eval seeds",
+        "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
+        "storage": "uncompressed npz; avoid compression overhead for the 10M pool",
+        "prompt_format": "[BOS] ([X] x [Y] y) * 16 [X] query [Y] answer",
         "numpy_version": np.__version__,
         "split_prompt_overlap": 0,
         "split_role": "held-out evaluation reused for checkpoint selection; no test split",
@@ -120,7 +121,8 @@ def prepare(directory, config):
     }
     for split, arrays in splits.items():
         path = directory / f"{split}.npz"
-        np.savez_compressed(path, **arrays)
+        print(f"Writing and fingerprinting {split} archive", flush=True)
+        np.savez(path, **arrays)
         metadata["splits"][split] = {
             "count": len(arrays["tokens"]),
             "content_sha256": array_hash(arrays),
@@ -128,6 +130,7 @@ def prepare(directory, config):
             "unique_prompts": len(set(arrays["prompt_hashes"])),
             "clipping": clipping_summary(arrays),
         }
+        print(f"Finished {split}: {path.stat().st_size:,} bytes", flush=True)
     save_codec(directory)
     write_json(directory / "metadata.json", metadata)
     return metadata
@@ -136,6 +139,8 @@ def prepare(directory, config):
 def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
+    if metadata["schema_version"] != 2:
+        raise ValueError("Dataset schema mismatch: prepare a new pool with the 20-token [X]/[Y] codec")
     DatasetConfig(**metadata["config"]).validate()
     splits = {}
     for split in ("train", "eval"):
@@ -158,19 +163,19 @@ def subset(arrays, indices):
     return {name: value[indices] for name, value in arrays.items()}
 
 
-def fixed_training_indices(train_count, train_eval_size, seed):
-    rng = np.random.Generator(np.random.PCG64(seed))
-    return rng.permutation(train_count)[:train_eval_size]
+def fixed_training_indices(train_count, train_eval_size):
+    """Select once per new run; checkpoint the indices for later evaluations/resume."""
+    return np.random.default_rng().choice(train_count, size=train_eval_size, replace=False)
 
 
 class FrozenOrder:
     """A resumable shuffled index stream; never mutates or regenerates examples."""
 
-    def __init__(self, count, seed):
+    def __init__(self, count):
         if count < 1:
             raise ValueError("Empty training pool")
         self.count = count
-        self.rng = np.random.Generator(np.random.PCG64(seed))
+        self.rng = np.random.default_rng()
         self.order = self.rng.permutation(count)
         self.cursor = 0
         self.epochs = 0

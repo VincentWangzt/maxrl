@@ -1,207 +1,148 @@
 # Fixed-pool noisy linear regression
 
-Independent synthetic autoregressive SFT experiment, with no dependency on the
-maze tokenizer, rewards, or datasets. All Python execution is on
+Independent synthetic autoregressive SFT experiment. All Python execution is on
 `cmu-L40-live:~/maxrl`; local work is editing, Git and Ruff only.
 
-The completed first run and reference comparisons are documented in [RESULTS.md](RESULTS.md).
-Metric definitions, normalization choices and a detailed evaluation audit are in [EVALUATION.md](EVALUATION.md).
-For the target/reference explanation and the compact dashboard layout, start
-with [METRICS.md](METRICS.md).
+## Current experiment
 
-## Experiment settings
+The current launchers prepare **10,000,000 frozen training examples** and
+**1,024 held-out evaluation examples**, then train on **GPU 1** for
+**150,000 optimizer steps**, batch **64**, microbatch **64**. This consumes
+**9,600,000 distinct examples**, or **0.96 pool passes**: no training example is
+repeated in this run, and 400,000 examples remain unused.
 
-The user confirmed **GPU 1** and **100,000 frozen training examples**. There are
-1,024 held-out evaluation examples and no test split. Each example draws a new
-`w ~ N(0,I/4)`, 16 context inputs and one query from `N(0,I_4)`, and independent
-context/query noise with one shared standard deviation. The first run used
-**sigma=0.5**; the current launchers use **sigma=0.1 for both context and query**.
-The draws are independent; sharing sigma means the same noise level, not the
-same realized noise. Continuous outcomes are formed before quantization. All
-latents, continuous arrays, noises and targets are saved once, including the
-noisy query outcome.
+Each example independently draws `w ~ N(0,I/4)`, 16 context inputs and one
+query from `N(0,I_4)`. Outputs are `y = w·x + epsilon`, with independent context
+and query noises sharing **sigma=0.1**. Noise is added to outputs, not inputs.
+Each prompt uses one common latent coefficient vector; different prompts have
+different vectors. Continuous arrays, coefficients, noise realizations and
+targets are generated once and saved. There is no test split.
 
-The lower-noise pool uses the original data seeds, keeping latent coefficients,
-inputs and noiseless signals identical while scaling both noise arrays by 0.2.
-It has its own directory, `fixed_d4_n16_100k_sigma0p1`, and does not overwrite
-the first pool. `prepare.sh` owns the shared `SIGMA`; Bayesian/ridge and query-only
-references read that value from dataset metadata. This Gaussian-reference
-implementation requires positive sigma; this run selects 0.1 rather than zero.
+There are **no fixed seed settings** in dataset generation or SFT. Dataset
+splits and NumPy generators for shuffling and subset selection use fresh OS
+entropy, and training does not reset Python, NumPy or Torch seeds. Each new
+invocation therefore creates fresh random draws. Saved datasets stay fixed,
+and checkpoint RNG states support resuming an existing run. Deterministic
+Torch kernels remain enabled; that does not fix random initialization.
 
-Every scalar uses the inclusive 256-center grid on `[-5,5]`, midpoint ties toward
-the larger index, then two base-16 digit IDs. The visible sequence is 205 tokens;
-the prompt is its first 203 tokens. Nonfinite scalars and overlength input fail.
-The codec uses midpoint search, the floating-point stable equivalent of the
-specified clipped rounding formula, so exact represented midpoint ties and their
-immediate neighbors have unambiguous results. There is no exact zero center.
+## Numerical vocabulary and prompt
 
-The 22-token vocabulary is saved as `codec.json`. Numeric encoding/decoding is
-explicit (`noisy_regression.codec`), with no text tokenizer or pretrained
-weights. The model is scratch Qwen2: hidden size 128, four layers, four query
-heads/two KV heads, MLP size 512, context capacity 512, RoPE theta 1,000,000,
-RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal attention, no
-dropout/sliding window/EOS. Architecture values are explicitly passed from the
-configuration block in `sft.sh`. The expected parameter count is **988,032**;
-the focused CPU checks and first GPU run both verified this count. Each run records it in `manifest.json`.
+Every scalar uses an inclusive 256-center grid on `[-5,5]`, midpoint ties toward
+the larger index, then two base-16 digit IDs. Out-of-range values map to endpoint
+bins; nonfinite scalars fail. The spacing is `10/255`; there is no exact zero
+center. A digit pair `(a,b)` decodes to `-5 + (16*a+b)*10/255`.
 
-Training uses exactly 10,000 updates, effective batch 64, microbatch 64, **one
-forward/backward pass per update (no accumulation)**, and 640,000 presentations
-(6.4 pool passes). The original run was launched with microbatch 16 and four
-accumulation rounds; it was left unchanged at the user's request. Shuffling spans
-epoch boundaries without dropping or regenerating examples. AdamW uses LR
-`5e-4`, betas `(0.9,0.95)`, epsilon `1e-8`, weight decay `0.01`, 200 warmup
-updates then constant LR, and gradient norm clipping at 1.0. Update `s`, counted
-from 1, uses `5e-4 * min(s/200,1)`. Matrices, including the tied embedding, decay;
-biases and RMSNorm scales do not. Every parameter name in each group is recorded.
-CUDA forward uses BF16 autocast with FP32 master parameters and optimizer states;
-loss/log-softmax are FP32 and probability/statistical calculations are FP64.
-Deterministic algorithms are enabled; cross-version/device bitwise identity is
-not promised. Resume must use the same settings and dataset.
+The **20-token vocabulary** is digits `0` through `F`, `[X]`, `[Y]`, `[PAD]`
+and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
+
+```text
+[BOS]
+[X] x_1 [Y] y_1
+...
+[X] x_16 [Y] y_16
+[X] query_x [Y] query_y
+```
+
+Each `x` is four scalars (eight digit tokens); each `y` is two digit tokens.
+The prompt is **203 tokens**, ending with `[Y]`; its answer is two more tokens,
+for **205 total**. The hidden `w`, unrounded arrays and noise values are never
+included in the prompt. The vocabulary is saved as `codec.json`; there is no
+text tokenizer or pretrained embedding.
+
+Dataset **schema 2** uses this vocabulary and rejects older pools explicitly.
+The earlier 22-token datasets/checkpoints require their original code revision
+(the last revision before this change was `1872344`). They remain historical
+artifacts and are not overwritten or silently converted.
+
+## Model and optimization
+
+The scratch Qwen2 dimensions stay the same: hidden size 128, four layers,
+four query heads/two KV heads, MLP size 512, context capacity 512, RoPE theta
+1,000,000, RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal
+attention and no dropout/sliding window/EOS. Removing the two special tokens
+reduces the trainable parameter count from 988,032 to **987,776**.
+
+AdamW uses LR **1e-4** (one fifth of the former 5e-4), betas `(0.9,0.95)`,
+epsilon `1e-8`, weight decay `0.01`, **200 warmup updates then constant LR**, and
+gradient clipping at 1.0. Update `s`, counted from 1, uses
+`1e-4 * min(s/200,1)`. Matrices decay; biases and RMSNorm scales do not.
+Every parameter group is recorded. CUDA uses BF16 autocast with FP32 master
+parameters/optimizer states, FP32 loss, and FP64 distribution statistics.
+
+Only the final two answer tokens receive loss. The logits at positions 202
+and 203 predict target positions 203 and 204 (zero-based), with both softmaxes
+restricted to digit IDs 0–15. Loss is the batch mean of summed two-token NLLs.
+Batch 64/microbatch 64 means one forward/backward pass per update.
 
 ## Server commands
 
-Commit locally, push to GitHub, then pull those commits into the server checkout.
-Do not copy source files to the server. The following commands run on the server
-from `~/maxrl`, after Git synchronization:
+Commit locally, push to GitHub, then pull into the server checkout. After sync,
+run these commands on the server from `~/maxrl`:
 
 ```bash
 bash noisy-regression/validate.sh
 bash noisy-regression/prepare.sh
 bash noisy-regression/sft.sh
-# Optional independent reevaluation of the final checkpoint after training:
+# Optional final-checkpoint reevaluation:
 bash noisy-regression/evaluate.sh
+# CPU baselines on this same new evaluation pool:
+bash noisy-regression/evaluate_bayesian.sh
+bash noisy-regression/evaluate_ridge.sh
 ```
 
-Each launcher has its own paths, experiment values and environment block; there
-is no shared `config.sh` and no ambient experiment-setting overrides. GPU work
-fails if the explicitly selected GPU has a compute process. Launchers source
-the repository `.env` using the existing convention. `sft.sh` enables online
-W&B logging in project `noisy-regression-sft` and requires `WANDB_API_KEY` from
-the environment or `.env`, exactly as the maze launcher does. Never print
-credentials. Local JSON/NPZ logs and checkpoints remain available as well.
-The existing server `.venv` must provide PyTorch,
-Transformers with Qwen2/`DynamicCache.batch_repeat_interleave`, NumPy, SciPy,
-Matplotlib, W&B and pytest. Exact core installed versions are captured with each run.
+Launchers use explicit configuration blocks, the server `.venv`, and `.env`.
+SFT enables online W&B logging in `noisy-regression-sft` and requires
+`WANDB_API_KEY`. GPU launchers check that GPU 1 has no existing compute process.
+Dataset generation and validation run on CPU. Output directories must be new.
 
-The current launcher's run name is `qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1`.
-The original `qwen2_1m_fixed100k_sft_10000` run keeps its 16×4 configuration and
-local logging. No restart or second training run is triggered by editing the
-launchers. `evaluate.sh` targets the current `bs64x1_sigma0p1` run name; select the
-original checkpoint explicitly to reevaluate the first run.
+## Evaluation and checkpoints
 
-W&B records configuration and dataset hashes, with 22 curated training-history
-keys in `eval`, `pass@k_exact`, `train`, `diagnostics`, and `timing`. MSE and NLL
-use `eval/{mse,nll}/{clean,noisy}`; exact pass uses
-`pass@k_exact/pass@{1,4,16,64,256}/{clean,noisy}`. All use the full held-out
-distribution, with no sampled scores, train-eval panels or progress section.
-Bayesian and ridge have separate one-time runs with the same evaluation keys:
-`bash noisy-regression/evaluate_bayesian.sh` and
-`bash noisy-regression/evaluate_ridge.sh` on the server. Both run on CPU and
-log once at step zero in the same project. They require fresh output directories.
-See [METRICS.md](METRICS.md) for definitions and the full mapping.
-Optimization and evaluation events at the same step are combined into one history row;
-that row is flushed at the next logged step or at completion. This avoids W&B
-discarding an evaluation after an already committed training step. The run ID
-and URL are saved in `wandb_run.json`. A resumed training invocation starts a
-new W&B run with `resume_from` identifying the source checkpoint; numerical
-resume state and the original logs are preserved.
+At step 0, every **500 updates**, and step 150,000, evaluation enumerates the
+complete 256-answer distribution for all 1,024 held-out prompts. No completions
+are sampled. One cached prefill plus 16 second-digit branches obtains these
+probabilities. Checkpoints and exact per-prompt probabilities are retained.
 
-`train/gradient_norm_before_clip` records the global L2 norm of all parameter
-gradients after the effective batch's backward passes and before clipping.
-It is logged with training loss/LR at step 1 and every `LOG_INTERVAL` steps
-(currently 10). Clipping at 1.0 does not cap the reported pre-clipping norm.
+W&B uses the existing 22 curated history keys in `eval`, `pass@k_exact`,
+`train`, `diagnostics` and `timing`. MSE and NLL use
+`eval/{mse,nll}/{clean,noisy}`; exact pass uses
+`pass@k_exact/pass@{1,4,16,64,256}/{clean,noisy}`. MSE compares the exact
+predictive mean with continuous targets; NLL and pass score quantized targets.
+Detailed uncertainties remain in local artifacts. See [METRICS.md](METRICS.md).
 
-Data preparation refuses an existing output directory. Training and standalone
-evaluation also require new output directories. To resume, set
-`RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in the top block of `sft.sh`, leaving
-the complete experiment configuration unchanged. Resume restores optimizer,
-scheduler, Python/NumPy/Torch/CUDA RNGs, current shuffle, cursor, epoch counter,
-presentation count and best checkpoint. Prior checkpoints remain where they
-were saved; the best pointer may reference the original run directory. A
-checkpoint directory is published only after all its files are written.
-Generation settings have been removed from the current training configuration.
-Older trainer states with those settings require their original code revision
-for an exact resume; their saved models remain usable with `evaluate.sh`.
+Offline training NLL uses a random 1,024-example subset selected once per new
+run. Its indices are stored in each checkpoint and recovered on resume, so
+the diagnostic compares the same examples throughout a run. Held-out
+evaluation always uses the complete evaluation pool. A final context-mismatch
+control measures dependence on the context while preserving each query/target.
 
-## Evaluation and interpretation
+Bayesian and decoded-input ridge are separate baseline methods with the same
+evaluation keys. The continuous Bayesian reference sees extra precision; ridge
+uses quantized inputs and approximate Gaussian uncertainty. Both read sigma
+from the new pool's metadata. Their new run names include `10m_xy_sigma0p1`.
 
-At step 0, every 500 updates, and step 10,000, likelihood and exact pass@k use all
-1,024 held-out examples. Comparable training NLL uses a fixed 1,024-example
-training subset. The loss is the mean of **summed two-token answer NLLs**, with
-the logits at positions 202 and 203 predicting target positions 203 and 204
-(zero-based). Both softmaxes contain only digit IDs 0–15; Hugging Face's
-unrestricted, internally shifted loss is not used.
+To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
+the complete training configuration unchanged. A checkpoint restores model,
+optimizer, scheduler, shuffle/cursor, diagnostic subset, and Python/NumPy/
+Torch/CUDA RNG state. The best pointer can reference an earlier run directory.
+A resumed invocation starts a new W&B run with `resume_from` recorded.
 
-`exact_pass[k]` is the prompt average of `1-(1-p_target)^k`, evaluated stably,
-for the noisy target tokens. `clean_exact_pass[k]` instead scores the tokens
-obtained by quantizing `query_signal`. `answer_nll` and `clean_answer_nll`
-likewise score the noisy and clean tokens under the same model distribution.
-Dashboard MSE uses that distribution's exact mean against each continuous target.
+## Artifacts
 
-**Evaluation does not generate sampled completions.** For each prompt, one
-cached prefill gives the 16 first-digit probabilities, then branching the cache
-over those 16 digits gives all conditional second-digit probabilities. This
-enumerates all 256 complete answers. `eval_batch_size` controls the prompt
-batch size. Training-time evaluation and `evaluate.sh` both use this path;
-there is no generation subset, sample count, generation batch size, or sampling
-seed. Each new evaluation NPZ contains only full-pool `ids` and `log_probs`.
-The offline report also uses exact clean/noisy MSE, NLL and pass@k.
+- Dataset: `noisy-regression/data/fixed_d4_n16_10m_xy_sigma0p1/`, containing
+  `train.npz`, `eval.npz`, `metadata.json` and `codec.json`. Archives are
+  uncompressed to avoid compression overhead at this scale. All underlying
+  continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
+  records file/content SHA-256, clipping and the train/eval overlap audit.
+- Training: `noisy-regression/checkpoints/qwen2_1m_fixed10m_xy_sft_150000_bs64_lr1e-4_sigma0p1/`,
+  containing the manifest, dataset metadata, reference statistics, W&B run link,
+  JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
+  final summary and plots/report generated after successful completion.
+- Earlier runs are documented in [RESULTS.md](RESULTS.md) and
+  [EVALUATION.md](EVALUATION.md). Their fixed seeds and older vocabulary describe
+  those historical experiments, not the current launchers.
 
-MSE uses the exact weighted grid mean against the continuous signal or outcome.
-The logged value remains raw MSE. The noiseless signal's population variance is
-already 1 under this experiment's prior, so normalizing by it changes nothing.
-Archived sampled metrics and completions from earlier runs remain unchanged.
-They describe the former sampling procedure; current scripts do not recreate
-them. The separate fixed training subset for offline NLL uses PCG64 with
-`subset_seed`; held-out evaluation always uses the full pool.
-
-Reference metrics include uniform 256-way predictions, query-only continuous
-prior predictions, their decoded-query plug-in approximation, continuous-data
-Bayesian regression, and decoded-data ridge/Gaussian regression. Cholesky solves
-avoid explicit inverses. Gaussian probabilities integrate between grid
-midpoints, with infinite endpoint tails and stable log-CDF differences. The
-continuous references see extra precision and are labeled optimistic; the
-decoded variants are approximations to conditioning on quantized observations.
-
-Reports include entropy, normalization error, clipping fractions, predictive
-mean errors separately against continuous noisy outcomes, decoded target
-centers and continuous noiseless signals, and a final mismatched-context NLL
-control that preserves each query/target. A rise under the control indicates
-context dependence, not Bayes-optimal inference. Held-out data are reused for
-selection and are never passed to the optimizer. One seed, a frozen noisy pool,
-and evaluation-based selection limit generalization claims. No target pass@1
-or architecture adequacy claim is assumed.
-
-## Artifacts and seeds
-
-- Current dataset: `noisy-regression/data/fixed_d4_n16_100k_sigma0p1/{train,eval}.npz`,
-  `metadata.json`, `codec.json`. NPZ arrays include continuous inputs/outcomes,
-  coefficients, noise, noiseless query signal, token sequences, stable IDs and
-  prompt hashes. Metadata includes clipping counts, exact configuration,
-  content SHA-256, file SHA-256 and the train/eval prompt-overlap audit. File
-  hashes verify the stored archive; content hashes identify deterministic
-  arrays independently of archive container metadata.
-- Current launcher output: `noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1/` with
-  `manifest.json`, `references.json`, `metrics.jsonl`, `evaluation-*.npz`,
-  `checkpoint-00000` through `checkpoint-10000`, `best_checkpoint.json`,
-  `summary.json`, `report.md`, `learning_curves.png` and `pass_at_k.png`.
-  Step 0 is retained and eligible for best-checkpoint selection. The original
-  run uses `qwen2_1m_fixed100k_sft_10000/`; its dataset is `fixed_d4_n16_100k/`.
-- Seeds: training data 1729; evaluation data 2718; model/global 3141;
-  training order 1618; fixed training subset 5772. Evaluation uses no sampling RNG.
-
-The SFT launcher creates the report after successful completion. It can also be
-rendered while the run is in progress on the server:
-
-```bash
-CUDA_VISIBLE_DEVICES='' PYTHONPATH="$PWD/noisy-regression:$PWD" \
-  .venv/bin/python -m noisy_regression.report \
-  --run noisy-regression/checkpoints/qwen2_1m_fixed100k_sft_10000_bs64x1_sigma0p1
-```
-
-Focused CPU validation covers codec endpoints/ties/clipping/round trips,
-reproducibility/fingerprints/split separation, frozen examples across epochs,
-sequence layout, answer-only shifting and masking, actual model parameter
-count/forward/backward/causality, cached distribution agreement, normalization,
-sampling/estimator correctness, Gaussian references, checkpoint resume, and a
-two-update end-to-end run. Run only that module, not the repository's full suite.
+Focused server CPU checks cover fresh generation/frozen persistence, hashes,
+split separation, the shared markers and answer-only loss, model parameter
+count/causality, exact cached distributions, Gaussian references, W&B keys,
+and full optimizer/diagnostic-subset recovery on resume. Test-only seeds make
+numerical checks repeatable; experiment code does not set fixed seeds.

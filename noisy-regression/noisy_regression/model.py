@@ -7,12 +7,12 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, Qwen2Config
 from transformers.cache_utils import DynamicCache
 
-from noisy_regression.codec import ANSWER, BOS, DIGITS, PAD, PROMPT_LENGTH, SEQUENCE_LENGTH
+from noisy_regression.codec import BOS, DIGITS, PAD, PROMPT_LENGTH, SEQUENCE_LENGTH, VOCAB, X, Y
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    vocab_size: int = 22
+    vocab_size: int = len(VOCAB)
     hidden_size: int = 128
     num_hidden_layers: int = 4
     num_attention_heads: int = 4
@@ -38,8 +38,13 @@ def create_model(config):
 
 
 def answer_labels(tokens):
-    if tokens.ndim != 2 or tokens.shape[1] != SEQUENCE_LENGTH or not torch.all(tokens[:, PROMPT_LENGTH - 1] == ANSWER):
-        raise ValueError("Expected complete 205-token examples ending in [ANSWER] a b")
+    if (
+        tokens.ndim != 2
+        or tokens.shape[1] != SEQUENCE_LENGTH
+        or not torch.all(tokens[:, 193] == X)
+        or not torch.all(tokens[:, PROMPT_LENGTH - 1] == Y)
+    ):
+        raise ValueError("Expected complete 205-token examples ending in [X] query [Y] a b")
     if torch.any((tokens[:, -2:] < 0) | (tokens[:, -2:] >= DIGITS)):
         raise ValueError("Targets must be digit pairs")
     labels = torch.full_like(tokens, -100)
@@ -50,7 +55,7 @@ def answer_labels(tokens):
 def answer_nll_from_logits(logits, tokens):
     labels = answer_labels(tokens)
     # Do not pass labels into HF (which would shift internally and normalize
-    # over 22 vocabulary entries). Here the two shifts and 16-way CE are explicit.
+    # over all vocabulary entries). Here the two shifts and 16-way CE are explicit.
     selected = logits[:, PROMPT_LENGTH - 1 : PROMPT_LENGTH + 1, :DIGITS].float()
     return F.cross_entropy(selected.reshape(-1, DIGITS), labels[:, -2:].reshape(-1), reduction="none").reshape(-1, 2)
 
@@ -68,8 +73,13 @@ def conditional_log_probs(model, prompts):
     The same conditional table supports real sequential sampling and exact
     enumeration. No full 203-token prompt is repeated for the 256 completions.
     """
-    if prompts.ndim != 2 or prompts.shape[1] != PROMPT_LENGTH or not torch.all(prompts[:, -1] == ANSWER):
-        raise ValueError("Expected 203-token prompts ending in [ANSWER]")
+    if (
+        prompts.ndim != 2
+        or prompts.shape[1] != PROMPT_LENGTH
+        or not torch.all(prompts[:, 193] == X)
+        or not torch.all(prompts[:, -1] == Y)
+    ):
+        raise ValueError("Expected 203-token prompts ending in [X] query [Y]")
     if prompts.shape[1] + 2 > model.config.max_position_embeddings:
         raise ValueError("Overlength generation; truncation is forbidden")
     batch = len(prompts)

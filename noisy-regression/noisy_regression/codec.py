@@ -6,13 +6,11 @@ from pathlib import Path
 import numpy as np
 
 DIGITS = 16
-X, Y, QUERY, ANSWER, PAD, BOS = range(16, 22)
+X, Y, PAD, BOS = range(16, 20)
 VOCAB = {
     **{f"{i:X}": i for i in range(16)},
     "[X]": X,
     "[Y]": Y,
-    "[QUERY]": QUERY,
-    "[ANSWER]": ANSWER,
     "[PAD]": PAD,
     "[BOS]": BOS,
 }
@@ -68,9 +66,9 @@ def build_sequences(context_x, context_y, query_x, query_y, capacity=512):
     observations[:, :, 1:9] = encode(context_x).reshape(count, 16, 8)
     observations[:, :, 9] = Y
     observations[:, :, 10:12] = encode(context_y)
-    sequence[:, 193] = QUERY
+    sequence[:, 193] = X
     sequence[:, 194:202] = encode(query_x).reshape(count, 8)
-    sequence[:, 202] = ANSWER
+    sequence[:, 202] = Y
     sequence[:, 203:205] = encode(query_y)
     return sequence
 

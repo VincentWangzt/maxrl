@@ -100,7 +100,7 @@ def render_report(run):
         f"Observed presentations: {final['presentations']:,}. "
         f"Recorded elapsed time: {(summary or final)['elapsed_seconds'] / 60:.2f} minutes. "
         f"Effective batch: {manifest['training']['batch_size']}; microbatch: {manifest['training']['micro_batch_size']}. "
-        "Model/optimizer settings, exact decay groups, software versions and seeds: `manifest.json`.",
+        "Model/optimizer settings, exact decay groups, software versions and randomness policy: `manifest.json`.",
         "",
         "![Learning curves](learning_curves.png)",
         "",
@@ -155,7 +155,7 @@ def render_report(run):
         "decoded targets, and noiseless signals are separately recorded in the metrics.",
         "",
         "There is one held-out evaluation pool, reused for checkpoint selection, and no independent final test. "
-        "This is one training seed and one frozen noisy pool. Low exact match alone does not establish model inadequacy; "
+        "This is one initialization and one frozen noisy pool. Low exact match alone does not establish model inadequacy; "
         "learning curves, context controls, reference gaps, entropy, and target stochasticity must be considered together.",
         "",
         "| Split / scalar family | Clipped / total | Fraction |",
