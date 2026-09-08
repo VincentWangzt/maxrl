@@ -96,14 +96,11 @@ def distribution_summary(log_probs, arrays):
     target_indices = 16 * targets[:, 0] + targets[:, 1]
     rows = np.arange(len(targets))
     target_ll = log_probs[rows, target_indices]
-    first_ll = np.logaddexp.reduce(log_probs.reshape(-1, 16, 16), axis=2)[rows, targets[:, 0]]
     predictive_mean = probs @ CENTERS
     result = {
         "prompts": len(targets),
         "answer_nll": mean_se(-target_ll),
         "answer_log_likelihood": mean_se(target_ll),
-        "first_token_nll": mean_se(-first_ll),
-        "second_token_conditional_nll": mean_se(first_ll - target_ll),
         "entropy_nats_per_answer": mean_se(-(probs * log_probs).sum(1)),
         "max_normalization_error": normalization_error,
         "exact_pass": {str(k): mean_se(exact_pass(np.exp(target_ll), k)) for k in KS},

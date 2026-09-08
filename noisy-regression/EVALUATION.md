@@ -120,20 +120,32 @@ It is summed across the two answer tokens and then averaged across prompts,
 in **nats per complete answer**. Lower is better. Prompt tokens do not contribute
 to the loss, and each answer softmax contains only the 16 digit IDs.
 
+NLL means **negative log-likelihood**. With these hard categorical targets it is
+ordinary cross-entropy: the code directly calls `torch.nn.functional.cross_entropy`,
+without label smoothing or class weighting. The answer loss sums two token CEs,
+so it is twice the usual mean CE per answer token. Final answer NLL 4.798596
+corresponds to mean answer-token CE 2.399298. This is a discrete categorical
+likelihood over the quantized outcome, not a continuous Gaussian likelihood.
+[PyTorch cross-entropy definition](https://docs.pytorch.org/docs/2.14/generated/torch.nn.CrossEntropyLoss.html).
+
+The fixed training-subset answer NLL uses exactly the training CE objective on
+the same 1,024 training examples at each checkpoint. The optimization log uses
+the current batch of 64 examples before that optimizer update. The two losses
+therefore differ in which examples and model state they measure, not in their
+mathematical definition. The fixed subset helps compare training and held-out
+losses across checkpoints.
+
 | Metric | Best NLL checkpoint, 9,500 | Final checkpoint, 10,000 |
 |---|---:|---:|
 | Held-out answer NLL | 4.724389 ± 0.024210 | 4.798596 ± 0.014193 |
-| First-token NLL | 1.964527 | 2.036245 |
-| Second-token conditional NLL | 2.759862 | 2.762351 |
 | Fixed training-subset answer NLL | 4.701619 | 4.782619 |
 
 Uncertainty shown is one prompt SE. `answer_log_likelihood` is the negative of
 `answer_nll`, so it contains the same information with the opposite direction.
-The per-token decomposition helps locate changes: almost all of the final
-held-out NLL deterioration is in the first digit. The second digit remains close
-to uniform-digit NLL `log(16) = 2.772589`. This alone does not identify a cause;
-the two digits cover different numerical resolutions and condition on different
-information. Both training-subset and held-out NLL worsen at the final checkpoint.
+Both training-subset and held-out NLL worsen at the final checkpoint. Separate
+first- and second-token NLL metrics have been removed from future evaluations,
+references, context controls and W&B logging. Historical records retain their
+original measurements; answer-level NLL remains the likelihood metric.
 
 ## 3. Exact and generated pass@k
 
@@ -142,6 +154,12 @@ for prompt i. Exact pass@k is the prompt average of `1-(1-p_i)^k`. It is compute
 from the complete model distribution, without sampling error conditional on the
 model and prompts. Average the per-prompt expression; inserting the mean p into
 that expression would give a different answer for k > 1.
+
+The stored pair encodes **the noisy outcome** `y_i = s_i + epsilon_i` after
+clipping/quantization. Thus exact pass@k and generated pass@k both score the
+noisy target, whereas `sampled_mean_mse` scores the continuous clean signal.
+Scoring pass@k against the quantized clean signal would define a different
+metric and is not what the current implementation does.
 
 For 256 generated answers with `c_i` exact matches, the generated estimator is
 `1 - C(256-c_i,k)/C(256,k)`, averaged across prompts. At k=1 it is the fraction
@@ -219,6 +237,15 @@ sampled MSE **1.084268**, close to the observed **1.085008**. This term is model
 output variance divided by 256; it is not automatically the data noise variance
 divided by 256. It is a diagnostic expectation, not another implemented metric.
 
+For this finite answer space, routine evaluation does not require drawing
+samples. Target likelihood alone gives exact pass@k; enumerating all 256 bins
+also gives exact predictive means, entropy and the expected MSE of a mean of
+256 independent samples through the identity above. Actual generation is useful
+for checking the sampler or measuring one realized sample set. The expected
+sampled-mean MSE and realized `sampled_mean_mse` are distinct quantities, so
+replacing one with the other must change its metric name. The current sampler
+remains enabled to produce the originally requested 256-completion diagnostic.
+
 Paired exact-mean squared error minus zero-prediction squared error is
 **+0.003939 ± 0.001478 prompt SE** at step 9,500 and
 **+0.007871 ± 0.003247** at step 10,000. Final sampled error minus zero error is
@@ -253,6 +280,34 @@ mean by grid symmetry and therefore the same signal MSE.
 The Bayesian table value 0.084514 uses the mean of its binned distribution;
 0.084507 above uses its unbinned continuous posterior mean. Their small
 difference is expected from binning and clipping.
+
+For a direct comparison with simple regression, the following methods were also
+evaluated on the same 1,024 frozen problems. Each method fits only that problem's
+16 context observations, then predicts its query; there is no fitted intercept.
+These are unbinned scalar point predictions. The decoded rows use exactly the
+grid-valued observations and query accessible through the model's tokens.
+
+| Point predictor | Inputs/observations | Clean-signal MSE | Clean MSE prompt SE | Continuous noisy-outcome MSE |
+|---|---|---:|---:|---:|
+| Bayesian posterior mean / ridge, lambda=1 | Continuous | 0.084507 | 0.005052 | 0.370482 |
+| Ridge, lambda=1 | Decoded | 0.085375 | 0.005089 | 0.371591 |
+| Ordinary least squares | Continuous | 0.093552 | 0.005296 | 0.382866 |
+| Ordinary least squares | Decoded | 0.094482 | 0.005355 | 0.384057 |
+
+The known prior `w ~ N(0,I/4)` and noise variance 0.25 imply posterior mean
+`w_hat = (XᵀX + I)^(-1)Xᵀy`. This is ridge regression with lambda=1 under the
+objective `||y-Xw||² + lambda*||w||²`; lambda would be 1/16 if the data-fit term
+were instead divided by the 16 observations. Ordinary least squares omits that
+penalty. The implementation used the existing Cholesky Bayesian solver and
+NumPy's least-squares solver, respectively; all context matrices had rank 4.
+[Ridge objective convention](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.Ridge.html).
+
+These additional point-predictor results are report diagnostics, not new
+periodically logged reference distributions. The decoded ridge and ordinary
+least-squares results show that simple per-prompt fitting achieves clean-signal
+MSE around 0.085–0.094 with the token-visible data, versus about 1.07 for the
+model's exact predictive mean. Fresh query noise would add 0.25 to expected
+continuous-outcome MSE; the finite frozen-pool differences need not equal 0.25.
 
 The selected model's paired NLL gap is **+0.021899 ± 0.009855 prompt SE** versus
 continuous query-only and **+0.571732 ± 0.028673** versus continuous Bayesian.
@@ -313,8 +368,6 @@ training-seed variability or corrects for checkpoint selection.
 | Local event field | W&B scalar key |
 |---|---|
 | `eval.answer_nll.mean` | `eval/answer_nll` |
-| `eval.first_token_nll.mean` | `eval/first_token_nll` |
-| `eval.second_token_conditional_nll.mean` | `eval/second_token_conditional_nll` |
 | `eval.exact_pass[k].mean` | `eval/exact_pass@k` |
 | `eval.generation.generative_pass[k].mean` | `eval/generation/generative_pass@k` |
 | `eval.generation.sampled_mean_mse.mean` | `eval/generation/sampled_mean_mse` |

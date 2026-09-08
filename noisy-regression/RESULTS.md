@@ -70,8 +70,7 @@ The estimates agree within sampling variability. The standard errors treat
 regression examples as units. The full report includes all nine requested k
 values and paired exact-versus-sampled differences.
 
-Final first-token NLL was **2.03625**, second-token conditional NLL **2.76235**,
-and predicted entropy **5.01296 nats/answer**. Maximum distribution normalization
+Final predicted entropy was **5.01296 nats/answer**. Maximum distribution normalization
 error was **2.28e-7**. Exact-distribution predictive-mean MSE was **1.31621** against continuous noisy
 outcomes, **1.31107** against decoded target centers, and **1.07572** against the
 continuous noiseless signal.

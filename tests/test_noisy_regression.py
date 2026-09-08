@@ -322,6 +322,9 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path):
     assert [event["eval"]["generation"]["prompts"] for event in evaluations] == [2, 2, 4]
     pools, _ = load_pool(pool)
     for event in evaluations:
+        for metric_group in (event["train"], event["eval"]):
+            assert "first_token_nll" not in metric_group
+            assert "second_token_conditional_nll" not in metric_group
         with np.load(tmp_path / "run" / f"evaluation-{event['step']:05d}.npz") as archive:
             selected_signal = pools["eval"]["query_signal"][archive["generation_indices"]]
             per_prompt_errors = (decode(archive["completions"]).mean(axis=1) - selected_signal) ** 2
@@ -396,6 +399,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, monkeyp
         assert "eval/generation/sampled_mean_mse/prompt_se" in values
         assert values["eval/generation/sampled_mean_mse/prompts"] == (4 if step == 2 else 2)
         assert "reference/uniform_256/answer_nll" in values
+        assert not any("first_token_nll" in name or "second_token_conditional_nll" in name for name in values)
         assert not any("example_ids" in name for name in values)
         if step:
             assert "train/answer_nll" in values and "train/learning_rate" in values

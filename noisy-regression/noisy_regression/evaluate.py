@@ -54,8 +54,6 @@ def likelihood(model, tokens, batch_size, device, precision):
     return {
         "answer_nll": mean_se(losses.sum(1)),
         "answer_log_likelihood": mean_se(-losses.sum(1)),
-        "first_token_nll": mean_se(losses[:, 0]),
-        "second_token_conditional_nll": mean_se(losses[:, 1]),
     }
 
 
