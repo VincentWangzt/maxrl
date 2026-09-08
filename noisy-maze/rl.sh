@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-if [[ "$#" -ne 2 ]]; then
-  echo "Usage: $0 {maxrl|grpo|rloo} GPU_ID" >&2
+if [[ "$#" -ne 2 && "$#" -ne 4 ]]; then
+  echo "Usage: $0 {maxrl|grpo|rloo} GPU_ID [--sft-checkpoint-step STEP]" >&2
   exit 2
 fi
 
@@ -18,9 +18,23 @@ case "${ADVANTAGE_ESTIMATOR}" in
     ;;
 esac
 
+# Choose a checkpoint within the SFT run independently of its training budget.
+SFT_CHECKPOINT_STEP=6000
+if [[ "$#" -eq 4 ]]; then
+  if [[ "$3" != "--sft-checkpoint-step" ]]; then
+    echo "Unknown option: $3 (expected --sft-checkpoint-step STEP)" >&2
+    exit 2
+  fi
+  SFT_CHECKPOINT_STEP="$4"
+fi
+if [[ ! "${SFT_CHECKPOINT_STEP}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--sft-checkpoint-step must be a positive integer without leading zeros." >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
-MODEL_PATH="${SFT_OUTPUT_DIR}/ckpt-${SFT_MAX_STEPS}"
+MODEL_PATH="${SFT_OUTPUT_DIR}/ckpt-${SFT_CHECKPOINT_STEP}"
 TRAIN_DATA="${RL_DATA_DIR}/train.parquet"
 VAL_DATA="${RL_DATA_DIR}/test.parquet"
 CHECKPOINT_DIR="${EXPERIMENT_ROOT}/checkpoints/rl"
@@ -38,7 +52,7 @@ TRAIN_BATCH_SIZE=32
 STEPS_PER_EPOCH=$((RL_TRAIN_COUNT / TRAIN_BATCH_SIZE))
 TOTAL_EPOCHS=200
 
-EXPERIMENT_NAME="${RL_TITLE}-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts-lr_${LR}-sft_${SFT_MAX_STEPS}steps"
+EXPERIMENT_NAME="${RL_TITLE}-${ADVANTAGE_ESTIMATOR}_${N_ROLLOUTS}rollouts-lr_${LR}-sft_${SFT_TRAIN_COUNT}_${SFT_MAX_STEPS}steps-ckpt_${SFT_CHECKPOINT_STEP}"
 
 for required_path in "${VENV_DIR}/bin/activate" "${MODEL_PATH}" "${TRAIN_DATA}" "${VAL_DATA}"; do
   if [[ ! -e "${required_path}" ]]; then

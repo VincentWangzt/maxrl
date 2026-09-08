@@ -58,19 +58,26 @@ the original experiment's corpus. Distinct real mazes can produce identical
 clouded observations, especially at high noise, so perfect pass@1 is not generally
 an attainable target.
 
-SFT uses batch size **32**, microbatch size 8, **6,000 optimizer steps**, and
+SFT uses batch size **32**, microbatch size **32** (one forward/backward pass per
+optimizer step, no gradient accumulation), **6,000 optimizer steps**, and
 **AdamW at constant LR 5e-4**, betas `(0.9, 0.95)`, weight decay 0.01, and no
 warmup. The copied Qwen2 architecture has hidden size 256, four layers, four
 attention heads, two KV heads, and intermediate size 1,024.
+
+The already launched 6,000-step run keeps its original microbatch size 8 (four
+accumulation passes). These defaults apply to future SFT launches.
 
 The 6,000-step run uses exactly one shuffled epoch over 192,000 distinct training
 examples: every optimizer step receives 32 samples without reusing any training
 row. The shared config derives the SFT training count from steps × batch size.
 Its checkpoints live in
 `checkpoints/noisy_maze_17_noise_0.1_sft_192000_6000steps`, preserving the earlier
-3,000-step run in its original directory. The RL launcher uses the new run's
-`ckpt-6000` after SFT finishes. RL run names also include the SFT step count so
-automatic checkpoint resume cannot pick up an older run trained from `ckpt-3000`.
+3,000-step run in its original directory. The RL launcher uses this new SFT run
+and defaults to `ckpt-6000`. Pass `--sft-checkpoint-step STEP` to select another
+saved checkpoint without changing the SFT training budget or source directory.
+RL run names and checkpoint directories include the SFT source training count,
+training budget, and selected checkpoint step to keep automatic resume separate
+for different initializations.
 
 Every **500 steps**, save a checkpoint, compute validation loss, and sample
 **256 solutions per evaluation maze** at temperature 1.0. Generation batches
@@ -80,7 +87,7 @@ and `metrics.jsonl`. The generation budget is 180 tokens for 17×17 and 256 for
 23×23; each covers every simple solution in that maze size. Overlength SFT
 sequences raise an error instead of truncating the solution.
 
-RL starts from this variant's `ckpt-6000`, with 32 prompts per training step,
+RL starts from this variant's selected SFT checkpoint, with 32 prompts per training step,
 128 rollouts per prompt, LR 5e-5, 200 epochs (6,400 steps), and no KL penalty.
 MaxRL, GRPO, and RLOO share the existing script style and optimizer settings.
 Evaluation uses 128 held-out mazes with 256 samples each, before training and
@@ -91,7 +98,7 @@ All SFT and RL launchers log to the W&B project `noisy_maze_maxrl_17x17`.
 Run names include the maze size and noise fraction; RL names also include the
 training set size, advantage estimator, rollout count, and learning rate. For example:
 `noisy_maze_17_noise_0.1_sft_192000-constant-lr-5e-4-6000steps` and
-`noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5-sft_6000steps`.
+`noisy_maze_17_noise_0.1_rl_1024-maxrl_128rollouts-lr_5e-5-sft_192000_6000steps-ckpt_6000`.
 
 The custom scorer uses `verl`'s batch reward manager. The existing prime manager
 passes its callback through a spawn process pool, but the framework's custom
@@ -113,10 +120,24 @@ bash noisy-maze/rl_rloo.sh GPU_ID
 ```
 
 Replace `GPU_ID` with an explicitly selected free physical GPU. Launchers check
-that the GPU exists and is idle. SFT must finish before RL starts. They use the
+that the GPU exists and is idle. The selected SFT checkpoint must have finished
+saving before RL starts. They use the
 repository `.venv` and load W&B credentials from `.env`, like the existing scripts.
 Generated artifacts remain under `noisy-maze/`; dataset creation and SFT refuse
 to overwrite existing output directories.
+
+To initialize RL from step 3,000 of the new 6,000-step SFT run:
+
+```bash
+bash noisy-maze/rl_maxrl.sh GPU_ID --sft-checkpoint-step 3000
+bash noisy-maze/rl_grpo.sh GPU_ID --sft-checkpoint-step 3000
+bash noisy-maze/rl_rloo.sh GPU_ID --sft-checkpoint-step 3000
+```
+
+These select
+`checkpoints/noisy_maze_17_noise_0.1_sft_192000_6000steps/ckpt-3000`,
+not the earlier 100,000-sample run. Omitting the flag selects step 6,000.
+An invalid step or missing checkpoint fails explicitly; there is no fallback.
 
 For an existing 100,000-row SFT corpus and original 2,048-row RL corpus, run
 `bash noisy-maze/prepare_sft_extension.sh` instead of `prepare.sh`. It retains all
