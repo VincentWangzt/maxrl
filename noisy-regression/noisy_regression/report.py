@@ -58,6 +58,7 @@ def render_report(run):
     plt.close(fig)
     fig, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
     generation = final["eval"]["generation"]
+    sampled_mean_mse = generation["sampled_mean_noiseless_signal_mse"]
     generation_references = references
     if generation["prompts"] < metadata["config"]["eval_count"]:
         # Reference overlays use precisely the same tasks as sampled curves,
@@ -139,6 +140,12 @@ def render_report(run):
     rows += [
         "",
         f"Generation used {generation['prompts']} held-out prompts and 256 independent completions each. Invalid completions: {generation['invalid_completions']}; overlength: {generation['overlength_completions']}. Exact and generated estimates below refer to the same prompts.",
+        "",
+        f"The MSE of each prompt's mean of 256 decoded predictions against its continuous noiseless signal "
+        f"(w·x_query) is {sampled_mean_mse['mean']:.6f} ± {sampled_mean_mse['prompt_se']:.6f} prompt SE "
+        f"over {sampled_mean_mse['prompts']} prompts. Average predictions within each prompt before squaring the "
+        "error, then average squared errors across prompts. This sampled mean includes Monte Carlo variability; "
+        "the separately recorded exact-distribution predictive mean integrates over all 256 output bins.",
         "",
         "| k | Exact | Generated | Prompt SE | Conditional sampling SD of mean |",
         "|---|---:|---:|---:|---:|",

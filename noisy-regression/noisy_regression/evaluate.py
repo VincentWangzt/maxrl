@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM
 
 from noisy_regression.codec import DIGITS, PROMPT_LENGTH
 from noisy_regression.data import fixed_subset_indices, load_pool, subset, write_json
-from noisy_regression.metrics import distribution_summary, mean_se, sampled_summary
+from noisy_regression.metrics import distribution_summary, mean_se, sampled_mean_noiseless_signal_mse, sampled_summary
 from noisy_regression.model import conditional_log_probs, joint_log_probs, sample_answers, teacher_forced_nll
 
 
@@ -110,6 +110,9 @@ def evaluate(
     report["generation"] = sampled_summary(successes, probabilities, samples)
     report["generation"].update(
         {
+            "sampled_mean_noiseless_signal_mse": sampled_mean_noiseless_signal_mse(
+                completions, arrays["query_signal"][indices]
+            ),
             "invalid_completions": int((~valid).sum()),
             "overlength_completions": 0,
             "output_length_tokens": 2,

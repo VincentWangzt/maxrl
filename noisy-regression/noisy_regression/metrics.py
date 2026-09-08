@@ -69,6 +69,21 @@ def sampled_summary(counts, target_probs, n):
     return result
 
 
+def sampled_mean_noiseless_signal_mse(completions, noiseless_signal):
+    """Decode 256 samples per prompt, average them, then score against w·x_query."""
+    completions = np.asarray(completions)
+    noiseless_signal = np.asarray(noiseless_signal, dtype=np.float64)
+    if (
+        noiseless_signal.ndim != 1
+        or len(noiseless_signal) < 1
+        or not np.isfinite(noiseless_signal).all()
+        or completions.shape != (len(noiseless_signal), 256, 2)
+    ):
+        raise ValueError("Expected (prompts, 256, 2) completions and one finite noiseless signal per prompt")
+    sampled_mean = decode(completions).mean(axis=1)
+    return mean_se((sampled_mean - noiseless_signal) ** 2)
+
+
 def distribution_summary(log_probs, arrays):
     log_probs = np.asarray(log_probs, dtype=np.float64)
     if log_probs.shape != (len(arrays["tokens"]), 256) or not np.isfinite(log_probs).all():
