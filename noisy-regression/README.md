@@ -4,6 +4,8 @@ Independent synthetic autoregressive SFT experiment, with no dependency on the
 maze tokenizer, rewards, or datasets. All Python execution is on
 `cmu-L40-live:~/maxrl`; local work is editing, Git and Ruff only.
 
+The completed first run and reference comparisons are documented in [RESULTS.md](RESULTS.md).
+
 ## Confirmed first experiment
 
 The user confirmed **GPU 1** and **100,000 frozen training examples**. There are
