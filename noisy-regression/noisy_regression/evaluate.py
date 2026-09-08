@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM
 
-from noisy_regression.codec import PROMPT_LENGTH
+from noisy_regression.codec import CONTEXT_SLICE, PROMPT_LENGTH
 from noisy_regression.data import load_pool, subset, write_json
 from noisy_regression.metrics import distribution_summary, mean_se
 from noisy_regression.model import conditional_log_probs, joint_log_probs, teacher_forced_nll
@@ -119,7 +119,7 @@ def main():
     )
     # A context mismatch control preserves every query and its stored target.
     shuffled = subset(splits["eval"], np.arange(len(splits["eval"]["tokens"])))
-    shuffled["tokens"][:, 1:193] = np.roll(shuffled["tokens"][:, 1:193], 1, axis=0)
+    shuffled["tokens"][:, CONTEXT_SLICE] = np.roll(shuffled["tokens"][:, CONTEXT_SLICE], 1, axis=0)
     report["mismatched_context_control"] = likelihood(
         model, shuffled["tokens"], args.eval_batch_size, device, args.precision
     )

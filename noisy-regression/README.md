@@ -7,13 +7,14 @@ Independent synthetic autoregressive SFT experiment. All Python execution is on
 
 The current launchers prepare **10,000,000 frozen training examples** and
 **1,024 held-out evaluation examples**, then train on **GPU 1** for
-**150,000 optimizer steps**, batch **64**, microbatch **64**. This consumes
+**75,000 optimizer steps**, batch **128**, microbatch **128**. This consumes
 **9,600,000 distinct examples**, or **0.96 pool passes**: no training example is
 repeated in this run, and 400,000 examples remain unused.
 
-Each example independently draws `w ~ N(0,I/4)`, 16 context inputs and one
-query from `N(0,I_4)`. Outputs are `y = w·x + epsilon`, with independent context
-and query noises sharing **sigma=0.1**. Noise is added to outputs, not inputs.
+Each example independently draws `w ~ N(0,I/2)`, 16 context inputs and one
+query from `N(0,I_2)`. Outputs are `y = w·x + epsilon`, with independent context
+and query noises sharing **sigma=0.01**. The prior scales with dimension to keep
+the unconditional signal variance at one. Noise is added to outputs, not inputs.
 Each prompt uses one common latent coefficient vector; different prompts have
 different vectors. Continuous arrays, coefficients, noise realizations and
 targets are generated once and saved. There is no test split.
@@ -27,10 +28,12 @@ Torch kernels remain enabled; that does not fix random initialization.
 
 ## Numerical vocabulary and prompt
 
-Every scalar uses an inclusive 256-center grid on `[-5,5]`, midpoint ties toward
+Every scalar uses an inclusive 256-center grid on `[-3,3]`, midpoint ties toward
 the larger index, then two base-16 digit IDs. Out-of-range values map to endpoint
-bins; nonfinite scalars fail. The spacing is `10/255`; there is no exact zero
-center. A digit pair `(a,b)` decodes to `-5 + (16*a+b)*10/255`.
+bins; nonfinite scalars fail. The spacing is `6/255` (about 0.02353); there is no
+exact zero center. A digit pair `(a,b)` decodes to `-3 + (16*a+b)*6/255`.
+This spacing is larger than sigma=0.01. Clipping at +/-3 discards tail information;
+the dataset metadata reports the actual clipping fraction for each array.
 
 The **20-token vocabulary** is digits `0` through `F`, `[X]`, `[Y]`, `[PAD]`
 and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
@@ -43,36 +46,37 @@ and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
 [X] query_x [Y] query_y
 ```
 
-Each `x` is four scalars (eight digit tokens); each `y` is two digit tokens.
-The prompt is **203 tokens**, ending with `[Y]`; its answer is two more tokens,
-for **205 total**. The hidden `w`, unrounded arrays and noise values are never
+Each `x` is two scalars (four digit tokens); each `y` is two digit tokens.
+The prompt is **135 tokens**, ending with `[Y]`; its answer is two more tokens,
+for **137 total**. The hidden `w`, unrounded arrays and noise values are never
 included in the prompt. The vocabulary is saved as `codec.json`; there is no
 text tokenizer or pretrained embedding.
 
-Dataset **schema 2** uses this vocabulary and rejects older pools explicitly.
-The earlier 22-token datasets/checkpoints require their original code revision
-(the last revision before this change was `1872344`). They remain historical
-artifacts and are not overwritten or silently converted.
+Dataset **schema 3** records and validates the scalar range and prompt layout,
+and rejects older pools explicitly. The preceding d=4, [-5,5], sigma=0.1 run
+requires its original code revision `f2f6c2a`. Earlier 22-token experiments use
+revision `1872344`. Historical datasets and checkpoints remain unchanged.
 
 ## Model and optimization
 
 The scratch Qwen2 dimensions stay the same: hidden size 128, four layers,
 four query heads/two KV heads, MLP size 512, context capacity 512, RoPE theta
 1,000,000, RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal
-attention and no dropout/sliding window/EOS. Removing the two special tokens
-reduces the trainable parameter count from 988,032 to **987,776**.
+attention and no dropout/sliding window/EOS. The 20-token vocabulary and
+**987,776** trainable parameters are unchanged from the preceding run.
 
-AdamW uses LR **1e-4** (one fifth of the former 5e-4), betas `(0.9,0.95)`,
-epsilon `1e-8`, weight decay `0.01`, **200 warmup updates then constant LR**, and
+AdamW uses LR **1e-4**, betas `(0.9,0.95)`,
+epsilon `1e-8`, weight decay `0.01`, **2,000 warmup updates then constant LR**, and
 gradient clipping at 1.0. Update `s`, counted from 1, uses
-`1e-4 * min(s/200,1)`. Matrices decay; biases and RMSNorm scales do not.
+`1e-4 * min(s/2000,1)`. The first update uses 5e-8 and update 2,000 reaches 1e-4.
+Matrices decay; biases and RMSNorm scales do not.
 Every parameter group is recorded. CUDA uses BF16 autocast with FP32 master
 parameters/optimizer states, FP32 loss, and FP64 distribution statistics.
 
-Only the final two answer tokens receive loss. The logits at positions 202
-and 203 predict target positions 203 and 204 (zero-based), with both softmaxes
+Only the final two answer tokens receive loss. The logits at positions 134
+and 135 predict target positions 135 and 136 (zero-based), with both softmaxes
 restricted to digit IDs 0–15. Loss is the batch mean of summed two-token NLLs.
-Batch 64/microbatch 64 means one forward/backward pass per update.
+Batch 128/microbatch 128 means one forward/backward pass per update.
 
 ## Server commands
 
@@ -97,7 +101,7 @@ Dataset generation and validation run on CPU. Output directories must be new.
 
 ## Evaluation and checkpoints
 
-At step 0, every **500 updates**, and step 150,000, evaluation enumerates the
+At step 0, every **500 updates**, and step 75,000, evaluation enumerates the
 complete 256-answer distribution for all 1,024 held-out prompts. No completions
 are sampled. One cached prefill plus 16 second-digit branches obtains these
 probabilities. Checkpoints and exact per-prompt probabilities are retained.
@@ -118,7 +122,7 @@ control measures dependence on the context while preserving each query/target.
 Bayesian and decoded-input ridge are separate baseline methods with the same
 evaluation keys. The continuous Bayesian reference sees extra precision; ridge
 uses quantized inputs and approximate Gaussian uncertainty. Both read sigma
-from the new pool's metadata. Their new run names include `10m_xy_sigma0p1`.
+from the new pool's metadata. Their run names include `d2_10m_xy_range3_sigma0p01`.
 
 To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
 the complete training configuration unchanged. A checkpoint restores model,
@@ -128,12 +132,12 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
 
 ## Artifacts
 
-- Dataset: `noisy-regression/data/fixed_d4_n16_10m_xy_sigma0p1/`, containing
+- Dataset: `noisy-regression/data/fixed_d2_n16_10m_xy_range3_sigma0p01/`, containing
   `train.npz`, `eval.npz`, `metadata.json` and `codec.json`. Archives are
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_1m_fixed10m_xy_sft_150000_bs64_lr1e-4_sigma0p1/`,
+- Training: `noisy-regression/checkpoints/qwen2_1m_d2_10m_xy_range3_sft_75000_bs128_lr1e-4_warmup2000_sigma0p01/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

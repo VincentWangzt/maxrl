@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, Qwen2Config
 from transformers.cache_utils import DynamicCache
 
-from noisy_regression.codec import BOS, DIGITS, PAD, PROMPT_LENGTH, SEQUENCE_LENGTH, VOCAB, X, Y
+from noisy_regression.codec import BOS, DIGITS, PAD, PROMPT_LENGTH, QUERY_OFFSET, SEQUENCE_LENGTH, VOCAB, X, Y
 
 
 @dataclass(frozen=True)
@@ -41,10 +41,10 @@ def answer_labels(tokens):
     if (
         tokens.ndim != 2
         or tokens.shape[1] != SEQUENCE_LENGTH
-        or not torch.all(tokens[:, 193] == X)
+        or not torch.all(tokens[:, QUERY_OFFSET] == X)
         or not torch.all(tokens[:, PROMPT_LENGTH - 1] == Y)
     ):
-        raise ValueError("Expected complete 205-token examples ending in [X] query [Y] a b")
+        raise ValueError(f"Expected complete {SEQUENCE_LENGTH}-token examples ending in [X] query [Y] a b")
     if torch.any((tokens[:, -2:] < 0) | (tokens[:, -2:] >= DIGITS)):
         raise ValueError("Targets must be digit pairs")
     labels = torch.full_like(tokens, -100)
@@ -71,15 +71,15 @@ def conditional_log_probs(model, prompts):
     """Prefill once per prompt, then extend its KV cache with all 16 first digits.
 
     The same conditional table supports real sequential sampling and exact
-    enumeration. No full 203-token prompt is repeated for the 256 completions.
+    enumeration. No full prompt is repeated for the 256 completions.
     """
     if (
         prompts.ndim != 2
         or prompts.shape[1] != PROMPT_LENGTH
-        or not torch.all(prompts[:, 193] == X)
+        or not torch.all(prompts[:, QUERY_OFFSET] == X)
         or not torch.all(prompts[:, -1] == Y)
     ):
-        raise ValueError("Expected 203-token prompts ending in [X] query [Y]")
+        raise ValueError(f"Expected {PROMPT_LENGTH}-token prompts ending in [X] query [Y]")
     if prompts.shape[1] + 2 > model.config.max_position_embeddings:
         raise ValueError("Overlength generation; truncation is forbidden")
     batch = len(prompts)

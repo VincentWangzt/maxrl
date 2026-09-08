@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d4_n16_10m_xy_sigma0p1"
-RUN_NAME="bayesian_continuous_10m_xy_sigma0p1"
+DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n16_10m_xy_range3_sigma0p01"
+RUN_NAME="bayesian_continuous_d2_10m_xy_range3_sigma0p01"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
 PROJECT_NAME="noisy-regression-sft"
 USE_WANDB=true

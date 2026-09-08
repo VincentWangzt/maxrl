@@ -12,6 +12,7 @@ import torch
 from noisy_regression.codec import (
     BOS,
     CENTERS,
+    CONTEXT_SLICE,
     DELTA,
     MIDPOINTS,
     PROMPT_LENGTH,
@@ -28,6 +29,7 @@ from noisy_regression.data import (
     DatasetConfig,
     FrozenOrder,
     array_hash,
+    clipping_summary,
     fixed_training_indices,
     generate_split,
     load_pool,
@@ -79,9 +81,9 @@ def test_codec_endpoints_midpoints_roundtrips_and_finite():
     np.testing.assert_array_equal(quantize(MIDPOINTS), np.arange(1, 256))
     np.testing.assert_array_equal(quantize(np.nextafter(MIDPOINTS, -np.inf)), np.arange(255))
     np.testing.assert_array_equal(quantize(np.nextafter(MIDPOINTS, np.inf)), np.arange(1, 256))
-    np.testing.assert_array_equal(quantize([-1e300, -5, 0, 5, 1e300]), [0, 0, 128, 255, 255])
-    assert DELTA == 10 / 255 and not np.any(CENTERS == 0)
-    np.testing.assert_array_equal(encode([-5, 5]), [[0, 0], [15, 15]])
+    np.testing.assert_array_equal(quantize([-1e300, -3, 0, 3, 1e300]), [0, 0, 128, 255, 255])
+    assert DELTA == 6 / 255 and not np.any(CENTERS == 0)
+    np.testing.assert_array_equal(encode([-3, 3]), [[0, 0], [15, 15]])
     for value in (np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match="nonfinite"):
             encode(value)
@@ -90,7 +92,11 @@ def test_codec_endpoints_midpoints_roundtrips_and_finite():
             decode(pair)
     rng = np.random.default_rng(100)
     z = rng.uniform(-10, 10, 10000)
-    np.testing.assert_array_equal(quantize(z), np.clip(np.floor((z + 5) / DELTA + 0.5), 0, 255))
+    np.testing.assert_array_equal(quantize(z), np.clip(np.floor((z + 3) / DELTA + 0.5), 0, 255))
+    clipping = clipping_summary(
+        {name: np.array([-4, -3, 0, 3, 4]) for name in ("context_x", "context_y", "query_x", "query_y")}
+    )
+    assert all(value == {"below": 1, "above": 1, "total_scalars": 5, "fraction": 0.4} for value in clipping.values())
 
 
 def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
@@ -114,16 +120,25 @@ def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     assert array_hash(pools["train"]) != array_hash(train_arrays)
     assert not pools["train"]["query_y"].flags.writeable
     assert set(metadata["splits"]) == {"train", "eval"}
-    assert metadata["schema_version"] == 2
+    assert metadata["schema_version"] == 3
+    assert metadata["codec"]["range"] == [-3, 3]
+    assert metadata["codec"]["dimension"] == 2
+    assert metadata["codec"]["prompt_length"] == 135
     assert not any("seed" in name for name in metadata["config"])
     assert not set(pools["train"]["prompt_hashes"]) & set(pools["eval"]["prompt_hashes"])
     with pytest.raises(FileExistsError):
         prepare(directory, config)
+    codec_path = directory / "codec.json"
+    codec = json.loads(codec_path.read_text())
+    codec_path.write_text(json.dumps({**codec, "range": [-5, 5]}))
+    with pytest.raises(ValueError, match="codec mismatch"):
+        load_pool(directory)
+    codec_path.write_text(json.dumps(codec))
     with (directory / "train.npz").open("ab") as stream:
         stream.write(b"tamper")
     with pytest.raises(ValueError, match="modified"):
         load_pool(directory)
-    metadata["schema_version"] = 1
+    metadata["schema_version"] = 2
     (directory / "metadata.json").write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="schema mismatch"):
         load_pool(directory)
@@ -149,25 +164,31 @@ def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
 
 def test_prompt_layout_and_no_latent_leakage(arrays):
     tokens = arrays["tokens"]
-    assert tokens.shape == (8, 205)
-    assert (tokens[:, 0] == BOS).all() and (tokens[:, 193] == X).all() and (tokens[:, 202] == Y).all()
+    assert tokens.shape == (8, 137)
+    assert (tokens[:, 0] == BOS).all() and (tokens[:, 129] == X).all() and (tokens[:, 134] == Y).all()
     assert len(VOCAB) == 20 and "[QUERY]" not in VOCAB and "[ANSWER]" not in VOCAB
     assert tokens.max() < len(VOCAB)
     for i in range(16):
-        offset = 1 + 12 * i
-        assert (tokens[:, offset] == X).all() and (tokens[:, offset + 9] == Y).all()
+        offset = 1 + 8 * i
+        assert (tokens[:, offset] == X).all() and (tokens[:, offset + 5] == Y).all()
         np.testing.assert_array_equal(
-            tokens[:, offset + 1 : offset + 9], encode(arrays["context_x"][:, i]).reshape(8, 8)
+            tokens[:, offset + 1 : offset + 5], encode(arrays["context_x"][:, i]).reshape(8, 4)
         )
-        np.testing.assert_array_equal(tokens[:, offset + 10 : offset + 12], encode(arrays["context_y"][:, i]))
-    np.testing.assert_array_equal(tokens[:, 194:202], encode(arrays["query_x"]).reshape(8, 8))
+        np.testing.assert_array_equal(tokens[:, offset + 6 : offset + 8], encode(arrays["context_y"][:, i]))
+    np.testing.assert_array_equal(tokens[:, 130:134], encode(arrays["query_x"]).reshape(8, 4))
     np.testing.assert_array_equal(tokens[:, -2:], encode(arrays["query_y"]))
     replaced_target = build_sequences(
         arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"] + 1
     )
-    np.testing.assert_array_equal(tokens[:, :203], replaced_target[:, :203])
+    np.testing.assert_array_equal(tokens[:, :135], replaced_target[:, :135])
+    shuffled = tokens.copy()
+    shuffled[:, CONTEXT_SLICE] = np.roll(shuffled[:, CONTEXT_SLICE], 1, axis=0)
+    np.testing.assert_array_equal(shuffled[:, 129:], tokens[:, 129:])
+    np.testing.assert_array_equal(shuffled[:, 1:129], np.roll(tokens[:, 1:129], 1, axis=0))
     with pytest.raises(ValueError, match="truncation"):
-        build_sequences(arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], 204)
+        build_sequences(arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], 136)
+    with pytest.raises(ValueError, match="d=2"):
+        DatasetConfig(dimension=4).validate()
 
 
 def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(monkeypatch):
@@ -176,25 +197,26 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
     monkeypatch.setattr(np.random, "default_rng", lambda: original_rng(2718))
     config = DatasetConfig(train_count=8, eval_count=4, sigma=0.5)
     baseline = generate_split(config, "eval")
-    for sigma in (0.1, 0.2):
+    np.testing.assert_array_equal(baseline["w"], original_rng(2718).normal(size=(4, 2)) / np.sqrt(2))
+    for sigma in (0.01, 0.1, 0.2):
         changed = generate_split(replace(config, sigma=sigma), "eval")
         for name in ("w", "context_x", "query_x", "query_signal", "ids"):
             np.testing.assert_array_equal(changed[name], baseline[name])
         for name in ("context_noise", "query_noise"):
             np.testing.assert_allclose(changed[name], baseline[name] * (sigma / config.sigma))
-        assert not np.array_equal(changed["tokens"][:, :193], baseline["tokens"][:, :193])
-        np.testing.assert_array_equal(changed["tokens"][:, 193:203], baseline["tokens"][:, 193:203])
+        assert not np.array_equal(changed["tokens"][:, :129], baseline["tokens"][:, :129])
+        np.testing.assert_array_equal(changed["tokens"][:, 129:135], baseline["tokens"][:, 129:135])
         assert not np.array_equal(changed["tokens"][:, -2:], baseline["tokens"][:, -2:])
 
-    context_x = np.tile(np.eye(4), (1, 4, 1))
-    weights = np.array([0.2, -0.3, 0.4, 0.1])
+    context_x = np.tile(np.eye(2), (1, 8, 1))
+    weights = np.array([0.2, -0.3])
     context_y = context_x @ weights
-    query_x = np.ones((1, 4))
-    for sigma in (0.5, 0.1):
+    query_x = np.ones((1, 2))
+    for sigma in (0.5, 0.1, 0.01):
         mean, variance = bayesian_predictive(context_x, context_y, query_x, sigma)
-        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2)])
-        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (1 + sigma**2)])
-    low_noise_config = replace(config, sigma=0.1)
+        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2 / 4)])
+        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (4 + sigma**2)])
+    low_noise_config = replace(config, sigma=0.01)
     lower = reference_distributions(baseline, low_noise_config)
     original = reference_distributions(baseline, config)
     assert not np.allclose(lower["query_only_continuous_optimistic"], original["query_only_continuous_optimistic"])
@@ -228,13 +250,13 @@ def test_answer_only_shift_and_restricted_loss(arrays):
     nll = answer_nll_from_logits(logits, tokens)
     torch.testing.assert_close(nll.sum(1), torch.full((8,), math.log(256)))
     nll.sum(1).mean().backward()
-    assert torch.count_nonzero(logits.grad[:, :202]) == 0
-    assert torch.count_nonzero(logits.grad[:, 204:]) == 0
+    assert torch.count_nonzero(logits.grad[:, : PROMPT_LENGTH - 1]) == 0
+    assert torch.count_nonzero(logits.grad[:, PROMPT_LENGTH + 1 :]) == 0
     assert torch.count_nonzero(logits.grad[:, :, 16:]) == 0
     altered = logits.detach().clone()
     altered[:, :, 16:] = 1e6
-    altered[:, :202] = -1e6
-    altered[:, 204:] = 1e6
+    altered[:, : PROMPT_LENGTH - 1] = -1e6
+    altered[:, PROMPT_LENGTH + 1 :] = 1e6
     torch.testing.assert_close(answer_nll_from_logits(altered, tokens), nll)
 
 
@@ -262,8 +284,10 @@ def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     with torch.no_grad():
         original_logits = model(tokens, use_cache=False).logits
         modified_logits = model(modified, use_cache=False).logits
-    torch.testing.assert_close(original_logits[:, :204], modified_logits[:, :204], rtol=0, atol=0)
-    with pytest.raises(ValueError, match="203-token"):
+    torch.testing.assert_close(
+        original_logits[:, : PROMPT_LENGTH + 1], modified_logits[:, : PROMPT_LENGTH + 1], rtol=0, atol=0
+    )
+    with pytest.raises(ValueError, match="135-token"):
         conditional_log_probs(model, tokens)
 
 
@@ -295,10 +319,10 @@ def test_exact_estimator_boundaries_and_sampling():
 
 
 def test_reference_normalization_and_analytic_cases(arrays):
-    mean, variance = bayesian_predictive(np.zeros((2, 16, 4)), np.zeros((2, 16)), np.ones((2, 4)), 0.5)
+    mean, variance = bayesian_predictive(np.zeros((2, 16, 2)), np.zeros((2, 16)), np.ones((2, 2)), 0.5)
     np.testing.assert_allclose(mean, 0)
     np.testing.assert_allclose(variance, 1.25)
-    gaussian = gaussian_bin_log_probs(np.array([-100.0, 0.0, 100.0]), np.array([0.25, 0.25, 0.25]))
+    gaussian = gaussian_bin_log_probs(np.array([-100.0, 0.0, 100.0]), np.array([0.0001, 0.0001, 0.0001]))
     assert np.isfinite(gaussian).all()
     np.testing.assert_allclose(np.exp(gaussian).sum(1), 1, atol=1e-13)
     assert np.exp(gaussian[0, 0]) == 1 and np.exp(gaussian[-1, -1]) == 1
@@ -351,12 +375,12 @@ def test_clean_and_noisy_metrics_use_exact_distribution_and_distinct_targets(arr
 
 def test_sampled_mean_mse_averages_predictions_before_squaring():
     completions = np.full((2, 256, 2), 15, dtype=np.uint8)
-    completions[0, :128] = 0  # Half -5, half +5: mean 0, despite sample variance 25.
-    signals = np.array([1.0, 2.0])  # Continuous signals, without quantization or query noise.
+    completions[0, :128] = 0  # Half -3, half +3: mean 0, despite sample variance 9.
+    signals = np.array([1.0, -2.0])  # Continuous signals, without quantization or query noise.
     result = sampled_mean_mse(completions, signals)
-    # Per-prompt squared errors: (0-1)^2 = 1 and (5-2)^2 = 9.
-    assert result["mean"] == pytest.approx(5)
-    assert result["prompt_se"] == pytest.approx(4)
+    # Per-prompt squared errors: (0-1)^2 = 1 and (3+2)^2 = 25.
+    assert result["mean"] == pytest.approx(13)
+    assert result["prompt_se"] == pytest.approx(12)
     assert result["prompts"] == 2
     for samples, targets in (
         (completions[:, :255], signals),
@@ -369,6 +393,23 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
     completions[0, 0, 0] = 16
     with pytest.raises(ValueError, match="digit IDs"):
         sampled_mean_mse(completions, signals)
+
+
+def test_warmup_uses_two_thousand_updates_then_constant_rate():
+    config = TrainConfig()
+    assert config.max_steps == 75_000 and config.warmup_steps == 2_000
+    assert config.learning_rate == 1e-4
+    parameter = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.SGD([parameter], lr=config.learning_rate)
+    scheduler = make_scheduler(optimizer, config.warmup_steps)
+    rates = {}
+    for step in range(1, 2002):
+        rates[step] = optimizer.param_groups[0]["lr"]
+        optimizer.step()
+        scheduler.step()
+    assert rates[1] == pytest.approx(5e-8)
+    assert rates[1999] == pytest.approx(9.995e-5)
+    assert rates[2000] == rates[2001] == 1e-4
 
 
 def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
@@ -515,8 +556,8 @@ def recorded_wandb(monkeypatch):
 def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb):
     recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
-    prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.1))
-    assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 64
+    prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.01))
+    assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 128
     config = TrainConfig(
         batch_size=4,
         micro_batch_size=4,
@@ -533,7 +574,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     summary = train(pool, tmp_path / "run", config, ModelConfig(), tracking_config=tracking)
     assert summary["presentations"] == 8
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
-    assert init_arguments["config"]["dataset"]["sigma"] == 0.1
+    assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
     assert init_arguments["config"]["dashboard_schema_version"] == 3
     assert init_arguments["config"]["dashboard_pass_k"] == [1, 4, 16, 64, 256]
@@ -616,7 +657,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
 def test_baseline_logs_same_exact_metrics_once_at_step_zero(tmp_path, recorded_wandb, method, reference):
     recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
-    dataset_config = DatasetConfig(train_count=8, eval_count=4, sigma=0.1)
+    dataset_config = DatasetConfig(train_count=8, eval_count=4, sigma=0.01)
     prepare(pool, dataset_config)
     tracking = TrackingConfig(True, "noisy-regression-sft", f"{method}-validation")
     output = tmp_path / method

@@ -8,21 +8,30 @@ from pathlib import Path
 
 import numpy as np
 
-from noisy_regression.codec import PROMPT_LENGTH, build_sequences, save_codec
+from noisy_regression.codec import (
+    DIMENSION,
+    OBSERVATIONS,
+    PROMPT_LENGTH,
+    RANGE_MAX,
+    RANGE_MIN,
+    build_sequences,
+    codec_config,
+    save_codec,
+)
 
 
 @dataclass(frozen=True)
 class DatasetConfig:
     train_count: int = 10_000_000
     eval_count: int = 1_024
-    dimension: int = 4
-    observations: int = 16
-    sigma: float = 0.1  # Shared standard deviation; context/query draws are independent.
+    dimension: int = DIMENSION
+    observations: int = OBSERVATIONS
+    sigma: float = 0.01  # Shared standard deviation; context/query draws are independent.
     capacity: int = 512
 
     def validate(self):
-        if (self.dimension, self.observations, self.capacity) != (4, 16, 512):
-            raise ValueError("This experiment requires d=4, n=16, capacity=512")
+        if (self.dimension, self.observations, self.capacity) != (DIMENSION, OBSERVATIONS, 512):
+            raise ValueError(f"This experiment requires d={DIMENSION}, n={OBSERVATIONS}, capacity=512")
         if not np.isfinite(self.sigma) or self.sigma <= 0:
             raise ValueError("Require finite sigma > 0 for both context and query noise")
         if min(self.train_count, self.eval_count) < 1:
@@ -56,11 +65,11 @@ def generate_split(config, split):
         raise ValueError("Only train and held-out eval splits exist")
     count = config.train_count if split == "train" else config.eval_count
     rng = np.random.default_rng()
-    w = rng.normal(size=(count, 4)) / np.sqrt(4)
-    context_x = rng.normal(size=(count, 16, 4))
-    context_noise = rng.normal(scale=config.sigma, size=(count, 16))
+    w = rng.normal(size=(count, config.dimension)) / np.sqrt(config.dimension)
+    context_x = rng.normal(size=(count, config.observations, config.dimension))
+    context_noise = rng.normal(scale=config.sigma, size=(count, config.observations))
     context_y = np.einsum("bnd,bd->bn", context_x, w) + context_noise
-    query_x = rng.normal(size=(count, 4))
+    query_x = rng.normal(size=(count, config.dimension))
     query_noise = rng.normal(scale=config.sigma, size=count)
     query_signal = np.einsum("bd,bd->b", query_x, w)
     query_y = query_signal + query_noise
@@ -86,7 +95,7 @@ def clipping_summary(arrays):
     result = {}
     for name in ("context_x", "context_y", "query_x", "query_y"):
         values = arrays[name]
-        low, high = int((values < -5).sum()), int((values > 5).sum())
+        low, high = int((values < RANGE_MIN).sum()), int((values > RANGE_MAX).sum())
         result[name] = {
             "below": low,
             "above": high,
@@ -109,8 +118,9 @@ def prepare(directory, config):
     if overlap:
         raise ValueError(f"Found {len(overlap)} overlapping tokenized prompts across splits")
     metadata = {
-        "schema_version": 2,
+        "schema_version": 3,
         "config": asdict(config),
+        "codec": codec_config(),
         "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
         "storage": "uncompressed npz; avoid compression overhead for the 10M pool",
         "prompt_format": "[BOS] ([X] x [Y] y) * 16 [X] query [Y] answer",
@@ -139,8 +149,10 @@ def prepare(directory, config):
 def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
-    if metadata["schema_version"] != 2:
-        raise ValueError("Dataset schema mismatch: prepare a new pool with the 20-token [X]/[Y] codec")
+    if metadata["schema_version"] != 3:
+        raise ValueError("Dataset schema mismatch: prepare a new d=2 pool with the [-3,3] codec")
+    if metadata["codec"] != codec_config() or json.loads((directory / "codec.json").read_text()) != codec_config():
+        raise ValueError("Dataset codec mismatch: scalar range and prompt layout must match the running code")
     DatasetConfig(**metadata["config"]).validate()
     splits = {}
     for split in ("train", "eval"):

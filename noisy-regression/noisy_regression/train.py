@@ -16,7 +16,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM
 
-from noisy_regression.codec import save_codec
+from noisy_regression.codec import CONTEXT_SLICE, save_codec
 from noisy_regression.data import DatasetConfig, FrozenOrder, fixed_training_indices, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
@@ -26,16 +26,16 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 
 @dataclass(frozen=True)
 class TrainConfig:
-    batch_size: int = 64
-    micro_batch_size: int = 64
-    max_steps: int = 150_000
+    batch_size: int = 128
+    micro_batch_size: int = 128
+    max_steps: int = 75_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
-    warmup_steps: int = 200
+    warmup_steps: int = 2_000
     max_grad_norm: float = 1.0
     train_eval_size: int = 1024
     eval_batch_size: int = 32
@@ -313,7 +313,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         }
         if final:
             control_tokens = splits["eval"]["tokens"].copy()
-            control_tokens[:, 1:193] = np.roll(control_tokens[:, 1:193], 1, axis=0)
+            control_tokens[:, CONTEXT_SLICE] = np.roll(control_tokens[:, CONTEXT_SLICE], 1, axis=0)
             metrics["eval"]["mismatched_context_control"] = likelihood(
                 model, control_tokens, config.eval_batch_size, device, config.precision
             )
@@ -383,7 +383,9 @@ def main():
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--project-name", default="noisy-regression-sft")
-    parser.add_argument("--experiment-name", default="qwen2_1m_fixed10m_xy_sft_150000_bs64_lr1e-4_sigma0p1")
+    parser.add_argument(
+        "--experiment-name", default="qwen2_1m_d2_10m_xy_range3_sft_75000_bs128_lr1e-4_warmup2000_sigma0p01"
+    )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )
