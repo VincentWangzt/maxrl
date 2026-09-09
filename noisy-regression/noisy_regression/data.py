@@ -26,12 +26,12 @@ class DatasetConfig:
     eval_count: int = 1_024
     dimension: int = DIMENSION
     observations: int = OBSERVATIONS
-    sigma: float = 0.01  # Shared standard deviation; context/query draws are independent.
-    capacity: int = 512
+    sigma: float = 0.001  # Shared standard deviation; context/query draws are independent.
+    capacity: int = 1024
 
     def validate(self):
-        if (self.dimension, self.observations, self.capacity) != (DIMENSION, OBSERVATIONS, 512):
-            raise ValueError(f"This experiment requires d={DIMENSION}, n={OBSERVATIONS}, capacity=512")
+        if (self.dimension, self.observations, self.capacity) != (DIMENSION, OBSERVATIONS, 1024):
+            raise ValueError(f"This experiment requires d={DIMENSION}, n={OBSERVATIONS}, capacity=1024")
         if not np.isfinite(self.sigma) or self.sigma <= 0:
             raise ValueError("Require finite sigma > 0 for both context and query noise")
         if min(self.train_count, self.eval_count) < 1:
@@ -118,12 +118,12 @@ def prepare(directory, config):
     if overlap:
         raise ValueError(f"Found {len(overlap)} overlapping tokenized prompts across splits")
     metadata = {
-        "schema_version": 3,
+        "schema_version": 4,
         "config": asdict(config),
         "codec": codec_config(),
         "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
         "storage": "uncompressed npz; avoid compression overhead for the 10M pool",
-        "prompt_format": "[BOS] ([X] x [Y] y) * 16 [X] query [Y] answer",
+        "prompt_format": f"[BOS] ([X] x [Y] y) * {config.observations} [X] query [Y] answer",
         "numpy_version": np.__version__,
         "split_prompt_overlap": 0,
         "split_role": "held-out evaluation reused for checkpoint selection; no test split",
@@ -149,8 +149,8 @@ def prepare(directory, config):
 def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
-    if metadata["schema_version"] != 3:
-        raise ValueError("Dataset schema mismatch: prepare a new d=2 pool with the [-3,3] codec")
+    if metadata["schema_version"] != 4:
+        raise ValueError("Dataset schema mismatch: prepare a new d=2, n=64 pool with the [-3,3] codec")
     if metadata["codec"] != codec_config() or json.loads((directory / "codec.json").read_text()) != codec_config():
         raise ValueError("Dataset codec mismatch: scalar range and prompt layout must match the running code")
     DatasetConfig(**metadata["config"]).validate()

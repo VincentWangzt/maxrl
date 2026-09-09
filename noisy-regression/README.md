@@ -6,14 +6,14 @@ Independent synthetic autoregressive SFT experiment. All Python execution is on
 ## Current experiment
 
 The current launchers prepare **10,000,000 frozen training examples** and
-**1,024 held-out evaluation examples**, then train on **GPU 1** for
-**75,000 optimizer steps**, batch **128**, microbatch **128**. This consumes
-**9,600,000 distinct examples**, or **0.96 pool passes**: no training example is
-repeated in this run, and 400,000 examples remain unused.
+**1,024 held-out evaluation examples**, then train on **GPU 7** for
+**80,000 optimizer steps**, batch **128**, microbatch **128**. This makes
+**10,240,000 presentations**, or **1.024 pool passes**: every training example
+is seen once, followed by 240,000 examples from a fresh shuffle of the same pool.
 
-Each example independently draws `w ~ N(0,I/2)`, 16 context inputs and one
+Each example independently draws `w ~ N(0,I/2)`, 64 context inputs and one
 query from `N(0,I_2)`. Outputs are `y = w·x + epsilon`, with independent context
-and query noises sharing **sigma=0.01**. The prior scales with dimension to keep
+and query noises sharing **sigma=0.001**. The prior scales with dimension to keep
 the unconditional signal variance at one. Noise is added to outputs, not inputs.
 Each prompt uses one common latent coefficient vector; different prompts have
 different vectors. Continuous arrays, coefficients, noise realizations and
@@ -32,8 +32,10 @@ Every scalar uses an inclusive 256-center grid on `[-3,3]`, midpoint ties toward
 the larger index, then two base-16 digit IDs. Out-of-range values map to endpoint
 bins; nonfinite scalars fail. The spacing is `6/255` (about 0.02353); there is no
 exact zero center. A digit pair `(a,b)` decodes to `-3 + (16*a+b)*6/255`.
-This spacing is larger than sigma=0.01. Clipping at +/-3 discards tail information;
-the dataset metadata reports the actual clipping fraction for each array.
+This spacing is much larger than sigma=0.001, so tokenization hides most noise
+realizations except where they move a value across a bin boundary. Clipping at
++/-3 discards tail information; the dataset metadata reports the actual clipping
+fraction for each array.
 
 The **20-token vocabulary** is digits `0` through `F`, `[X]`, `[Y]`, `[PAD]`
 and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
@@ -42,39 +44,42 @@ and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
 [BOS]
 [X] x_1 [Y] y_1
 ...
-[X] x_16 [Y] y_16
+[X] x_64 [Y] y_64
 [X] query_x [Y] query_y
 ```
 
 Each `x` is two scalars (four digit tokens); each `y` is two digit tokens.
-The prompt is **135 tokens**, ending with `[Y]`; its answer is two more tokens,
-for **137 total**. The hidden `w`, unrounded arrays and noise values are never
+The prompt is **519 tokens**, ending with `[Y]`; its answer is two more tokens,
+for **521 total**. The hidden `w`, unrounded arrays and noise values are never
 included in the prompt. The vocabulary is saved as `codec.json`; there is no
 text tokenizer or pretrained embedding.
 
-Dataset **schema 3** records and validates the scalar range and prompt layout,
-and rejects older pools explicitly. The preceding d=4, [-5,5], sigma=0.1 run
-requires its original code revision `f2f6c2a`. Earlier 22-token experiments use
-revision `1872344`. Historical datasets and checkpoints remain unchanged.
+Dataset **schema 4** records and validates the scalar range and prompt layout,
+and rejects older pools explicitly. The preceding d=2, n=16, sigma=0.01 run
+requires code revision `e973a39`; the d=4, [-5,5], sigma=0.1 run requires
+`f2f6c2a`. Earlier 22-token experiments use revision `1872344`. Historical
+datasets and checkpoints remain unchanged.
 
 ## Model and optimization
 
 The scratch Qwen2 dimensions stay the same: hidden size 128, four layers,
-four query heads/two KV heads, MLP size 512, context capacity 512, RoPE theta
+four query heads/two KV heads, MLP size 512, context capacity 1,024, RoPE theta
 1,000,000, RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal
 attention and no dropout/sliding window/EOS. The 20-token vocabulary and
 **987,776** trainable parameters are unchanged from the preceding run.
 
-AdamW uses LR **1e-4**, betas `(0.9,0.95)`,
-epsilon `1e-8`, weight decay `0.01`, **2,000 warmup updates then constant LR**, and
-gradient clipping at 1.0. Update `s`, counted from 1, uses
-`1e-4 * min(s/2000,1)`. The first update uses 5e-8 and update 2,000 reaches 1e-4.
+AdamW uses peak LR **1e-4**, betas `(0.9,0.95)`, epsilon `1e-8`, weight
+decay `0.01`, and gradient clipping at 1.0. The first **1,600 updates (2%)**
+linearly warm from **1e-5** to **1e-4** inclusive. The remaining 78,400 updates
+cosine-decay to **1e-5** at update 80,000. For one-based update `s`, the warmup
+is `1e-5 + 9e-5*(s-1)/1599`; after warmup it is
+`1e-5 + 9e-5*(1+cos(pi*(s-1600)/78400))/2`.
 Matrices decay; biases and RMSNorm scales do not.
 Every parameter group is recorded. CUDA uses BF16 autocast with FP32 master
 parameters/optimizer states, FP32 loss, and FP64 distribution statistics.
 
-Only the final two answer tokens receive loss. The logits at positions 134
-and 135 predict target positions 135 and 136 (zero-based), with both softmaxes
+Only the final two answer tokens receive loss. The logits at positions 518
+and 519 predict target positions 519 and 520 (zero-based), with both softmaxes
 restricted to digit IDs 0–15. Loss is the batch mean of summed two-token NLLs.
 Batch 128/microbatch 128 means one forward/backward pass per update.
 
@@ -96,7 +101,7 @@ bash noisy-regression/evaluate_ridge.sh
 
 Launchers use explicit configuration blocks, the server `.venv`, and `.env`.
 SFT enables online W&B logging in `noisy-regression-sft` and requires
-`WANDB_API_KEY`. GPU launchers check that GPU 1 has no existing compute process.
+`WANDB_API_KEY`. GPU launchers check that GPU 7 has no existing compute process.
 Dataset generation and validation run on CPU. Output directories must be new.
 
 ### Quick learning-rate sweep
@@ -104,7 +109,7 @@ Dataset generation and validation run on CPU. Output directories must be new.
 Run `bash noisy-regression/sweep_sft_lr.sh UNIQUE_SWEEP_NAME` on the server to
 queue nine fresh SFT runs sequentially on **GPU 3**. Rates are
 `1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4`; each uses
-**10,000 steps** and **500 linear warmup steps, then constant LR**.
+**10,000 steps** and **500 linear warmup steps from zero, then constant LR**.
 The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
 same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
 every 500 steps. Each run sees 1.28M distinct training examples (0.128 passes).
@@ -133,7 +138,7 @@ explicit checkpoint recovery through `sft.sh`; it is never overwritten.
 
 ## Evaluation and checkpoints
 
-At step 0, every **500 updates**, and step 75,000, evaluation enumerates the
+At step 0, every **500 updates**, and step 80,000, evaluation enumerates the
 complete 256-answer distribution for all 1,024 held-out prompts. No completions
 are sampled. One cached prefill plus 16 second-digit branches obtains these
 probabilities. Checkpoints and exact per-prompt probabilities are retained.
@@ -154,7 +159,7 @@ control measures dependence on the context while preserving each query/target.
 Bayesian and decoded-input ridge are separate baseline methods with the same
 evaluation keys. The continuous Bayesian reference sees extra precision; ridge
 uses quantized inputs and approximate Gaussian uncertainty. Both read sigma
-from the new pool's metadata. Their run names include `d2_10m_xy_range3_sigma0p01`.
+from the new pool's metadata. Their run names include `d2_n64_10m_xy_range3_sigma0p001`.
 
 To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
 the complete training configuration unchanged. A checkpoint restores model,
@@ -164,12 +169,12 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
 
 ## Artifacts
 
-- Dataset: `noisy-regression/data/fixed_d2_n16_10m_xy_range3_sigma0p01/`, containing
+- Dataset: `noisy-regression/data/fixed_d2_n64_10m_xy_range3_sigma0p001/`, containing
   `train.npz`, `eval.npz`, `metadata.json` and `codec.json`. Archives are
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_1m_d2_10m_xy_range3_sft_75000_bs128_lr1e-4_warmup2000_sigma0p01/`,
+- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_sigma0p001/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

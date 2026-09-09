@@ -16,7 +16,7 @@ These are three versions of the same example's target, not three model outputs.
 | `continuous_noisy_outcome` | `y = s + epsilon`, before rounding | Prediction error against the particular noisy observation |
 | `decoded_target_grid_value` | `decode(encode(y))`, the center represented by the two target tokens | Error against the numerical answer the model actually trains on |
 
-For example, a signal of 1.20 plus noise of 0.01 gives an outcome of 1.21.
+For example, a signal of 1.20 plus noise of 0.001 gives an outcome of 1.201.
 The codec rounds that outcome to approximately 1.211765. Its grid has 256 centers
 from -3 to 3, spaced by `6/255 ≈ 0.023529`; values beyond the range map to the
 endpoints. “Continuous” means the original numerical value before this codec.
@@ -34,8 +34,8 @@ errors; that would additionally penalize the predictive distribution's spread.
 
 For a predictor independent of fresh query noise,
 `E[(prediction - y)^2] = E[(prediction - s)^2] + sigma^2`.
-The current pool uses sigma=0.01, so the expected added error is 0.0001; the original
-pool used sigma=0.5, giving 0.25. The identity is an expectation, not an exact
+The current pool uses sigma=0.001, so the expected added error is 0.000001; the
+preceding pool used sigma=0.01, giving 0.0001. The identity is an expectation, not an exact
 difference on a finite frozen pool. Quantization/clipping further changes the
 decoded-target error.
 
@@ -209,8 +209,8 @@ bash noisy-regression/evaluate_ridge.sh
 ```
 
 Each creates a separate run in `noisy-regression-sft` and logs **once at step 0**.
-Current run names are `bayesian_continuous_d2_10m_xy_range3_sigma0p01` and
-`ridge_quantized_d2_10m_xy_range3_sigma0p01`, using the new 10M-pool evaluation split.
+Current run names are `bayesian_continuous_d2_n64_10m_xy_range3_sigma0p001` and
+`ridge_quantized_d2_n64_10m_xy_range3_sigma0p001`, using the new 10M-pool evaluation split.
 Each records the same 14 evaluation/pass scores, entropy, and two timing fields:
 17 history keys total. No completions are sampled and no model is trained.
 The shared keys allow comparing methods in the same panel or run-summary table;

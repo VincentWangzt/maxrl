@@ -28,14 +28,16 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 class TrainConfig:
     batch_size: int = 128
     micro_batch_size: int = 128
-    max_steps: int = 75_000
+    max_steps: int = 80_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
+    min_learning_rate: float = 1e-5
+    learning_rate_schedule: str = "linear_warmup_cosine_decay"
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
-    warmup_steps: int = 2_000
+    warmup_steps: int = 1_600
     max_grad_norm: float = 1.0
     train_eval_size: int = 1024
     eval_batch_size: int = 32
@@ -58,12 +60,15 @@ class TrainConfig:
             raise ValueError("Positive sizes required; effective batch must be divisible by microbatch")
         if not 1 <= self.train_eval_size <= len(splits["train"]["tokens"]):
             raise ValueError("Evaluation subset size exceeds its pool")
-        if self.warmup_steps < 0:
-            raise ValueError("Require nonnegative warmup")
+        if not 0 <= self.warmup_steps < self.max_steps:
+            raise ValueError("Require 0 <= warmup_steps < max_steps")
+        if self.learning_rate_schedule not in ("linear_warmup_cosine_decay", "linear_warmup_constant"):
+            raise ValueError("Unknown learning-rate schedule")
         if (
             not 0 <= self.beta1 < 1
             or not 0 <= self.beta2 < 1
             or min(self.learning_rate, self.optimizer_epsilon, self.max_grad_norm) <= 0
+            or not 0 <= self.min_learning_rate <= self.learning_rate
             or self.weight_decay < 0
         ):
             raise ValueError("Invalid optimizer settings")
@@ -190,7 +195,13 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     optimizer, decay_groups = make_optimizer(
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
-    scheduler = make_scheduler(optimizer, config.warmup_steps)
+    scheduler = make_scheduler(
+        optimizer,
+        config.warmup_steps,
+        config.max_steps,
+        config.min_learning_rate,
+        config.learning_rate_schedule,
+    )
     order = FrozenOrder(len(splits["train"]["tokens"]))
     step, previous_elapsed = 0, 0.0
     best = {"answer_nll": None, "step": None, "checkpoint": None}
@@ -227,6 +238,15 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
+        "learning_rate_schedule": (
+            f"{config.learning_rate_schedule}; linear warmup from {config.min_learning_rate:g} to "
+            f"{config.learning_rate:g}, then "
+            + (
+                f"cosine decay to {config.min_learning_rate:g}"
+                if config.learning_rate_schedule == "linear_warmup_cosine_decay"
+                else "constant base rate"
+            )
+        ),
         "versions": versions,
         "environment": environment,
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
@@ -384,7 +404,8 @@ def main():
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--project-name", default="noisy-regression-sft")
     parser.add_argument(
-        "--experiment-name", default="qwen2_1m_d2_10m_xy_range3_sft_75000_bs128_lr1e-4_warmup2000_sigma0p01"
+        "--experiment-name",
+        default="qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_sigma0p001",
     )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"

@@ -15,7 +15,9 @@ from noisy_regression.codec import (
     CONTEXT_SLICE,
     DELTA,
     MIDPOINTS,
+    OBSERVATIONS,
     PROMPT_LENGTH,
+    QUERY_OFFSET,
     SEQUENCE_LENGTH,
     VOCAB,
     X,
@@ -120,10 +122,12 @@ def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     assert array_hash(pools["train"]) != array_hash(train_arrays)
     assert not pools["train"]["query_y"].flags.writeable
     assert set(metadata["splits"]) == {"train", "eval"}
-    assert metadata["schema_version"] == 3
+    assert metadata["schema_version"] == 4
     assert metadata["codec"]["range"] == [-3, 3]
     assert metadata["codec"]["dimension"] == 2
-    assert metadata["codec"]["prompt_length"] == 135
+    assert metadata["codec"]["observations"] == 64
+    assert metadata["codec"]["prompt_length"] == 519
+    assert metadata["config"]["sigma"] == 0.001
     assert not any("seed" in name for name in metadata["config"])
     assert not set(pools["train"]["prompt_hashes"]) & set(pools["eval"]["prompt_hashes"])
     with pytest.raises(FileExistsError):
@@ -164,29 +168,37 @@ def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
 
 def test_prompt_layout_and_no_latent_leakage(arrays):
     tokens = arrays["tokens"]
-    assert tokens.shape == (8, 137)
-    assert (tokens[:, 0] == BOS).all() and (tokens[:, 129] == X).all() and (tokens[:, 134] == Y).all()
+    assert OBSERVATIONS == 64 and PROMPT_LENGTH == 519 and SEQUENCE_LENGTH == 521
+    assert tokens.shape == (8, SEQUENCE_LENGTH)
+    assert (tokens[:, 0] == BOS).all() and (tokens[:, QUERY_OFFSET] == X).all()
+    assert (tokens[:, PROMPT_LENGTH - 1] == Y).all()
     assert len(VOCAB) == 20 and "[QUERY]" not in VOCAB and "[ANSWER]" not in VOCAB
     assert tokens.max() < len(VOCAB)
-    for i in range(16):
+    for i in range(OBSERVATIONS):
         offset = 1 + 8 * i
         assert (tokens[:, offset] == X).all() and (tokens[:, offset + 5] == Y).all()
         np.testing.assert_array_equal(
             tokens[:, offset + 1 : offset + 5], encode(arrays["context_x"][:, i]).reshape(8, 4)
         )
         np.testing.assert_array_equal(tokens[:, offset + 6 : offset + 8], encode(arrays["context_y"][:, i]))
-    np.testing.assert_array_equal(tokens[:, 130:134], encode(arrays["query_x"]).reshape(8, 4))
+    np.testing.assert_array_equal(
+        tokens[:, QUERY_OFFSET + 1 : PROMPT_LENGTH - 1], encode(arrays["query_x"]).reshape(8, 4)
+    )
     np.testing.assert_array_equal(tokens[:, -2:], encode(arrays["query_y"]))
     replaced_target = build_sequences(
         arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"] + 1
     )
-    np.testing.assert_array_equal(tokens[:, :135], replaced_target[:, :135])
+    np.testing.assert_array_equal(tokens[:, :PROMPT_LENGTH], replaced_target[:, :PROMPT_LENGTH])
     shuffled = tokens.copy()
     shuffled[:, CONTEXT_SLICE] = np.roll(shuffled[:, CONTEXT_SLICE], 1, axis=0)
-    np.testing.assert_array_equal(shuffled[:, 129:], tokens[:, 129:])
-    np.testing.assert_array_equal(shuffled[:, 1:129], np.roll(tokens[:, 1:129], 1, axis=0))
+    np.testing.assert_array_equal(shuffled[:, QUERY_OFFSET:], tokens[:, QUERY_OFFSET:])
+    np.testing.assert_array_equal(
+        shuffled[:, CONTEXT_SLICE], np.roll(tokens[:, CONTEXT_SLICE], 1, axis=0)
+    )
     with pytest.raises(ValueError, match="truncation"):
-        build_sequences(arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], 136)
+        build_sequences(
+            arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], SEQUENCE_LENGTH - 1
+        )
     with pytest.raises(ValueError, match="d=2"):
         DatasetConfig(dimension=4).validate()
 
@@ -395,21 +407,30 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
         sampled_mean_mse(completions, signals)
 
 
-def test_warmup_uses_two_thousand_updates_then_constant_rate():
+def test_learning_rate_warms_up_then_cosine_decays_to_floor():
     config = TrainConfig()
-    assert config.max_steps == 75_000 and config.warmup_steps == 2_000
-    assert config.learning_rate == 1e-4
+    assert config.max_steps == 80_000 and config.warmup_steps == 1_600
+    assert config.learning_rate == 1e-4 and config.min_learning_rate == 1e-5
+    assert config.learning_rate_schedule == "linear_warmup_cosine_decay"
     parameter = torch.nn.Parameter(torch.zeros(()))
     optimizer = torch.optim.SGD([parameter], lr=config.learning_rate)
-    scheduler = make_scheduler(optimizer, config.warmup_steps)
+    scheduler = make_scheduler(
+        optimizer,
+        config.warmup_steps,
+        config.max_steps,
+        config.min_learning_rate,
+        config.learning_rate_schedule,
+    )
     rates = {}
-    for step in range(1, 2002):
-        rates[step] = optimizer.param_groups[0]["lr"]
+    for step in range(1, config.max_steps + 1):
+        if step in (1, config.warmup_steps, 40_800, config.max_steps):
+            rates[step] = optimizer.param_groups[0]["lr"]
         optimizer.step()
         scheduler.step()
-    assert rates[1] == pytest.approx(5e-8)
-    assert rates[1999] == pytest.approx(9.995e-5)
-    assert rates[2000] == rates[2001] == 1e-4
+    assert rates[1] == pytest.approx(1e-5)
+    assert rates[1_600] == pytest.approx(1e-4)
+    assert rates[40_800] == pytest.approx(5.5e-5)
+    assert rates[80_000] == pytest.approx(1e-5)
 
 
 def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
@@ -426,11 +447,17 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     optimizer, _ = make_optimizer(
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
-    scheduler = make_scheduler(optimizer, config.warmup_steps)
+    scheduler = make_scheduler(
+        optimizer,
+        config.warmup_steps,
+        config.max_steps,
+        config.min_learning_rate,
+        config.learning_rate_schedule,
+    )
     order = FrozenOrder(8)
     device = torch.device("cpu")
     first_step = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
-    assert first_step["learning_rate"] == config.learning_rate / 2
+    assert first_step["learning_rate"] == config.min_learning_rate
     checkpoint = tmp_path / "checkpoint"
     training_indices = np.array([0, 2, 4, 6])
     save_checkpoint(
@@ -466,6 +493,7 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
         device="cpu",
         precision="fp32",
         cpu_threads=1,
+        warmup_steps=0,
     )
     summary = train(pool, tmp_path / "run", config, ModelConfig())
     assert summary["steps"] == 2 and summary["presentations"] == 8
@@ -569,6 +597,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         precision="fp32",
         cpu_threads=1,
         log_interval=1,
+        warmup_steps=0,
     )
     tracking = TrackingConfig(True, "noisy-regression-sft", "cpu-validation")
     summary = train(pool, tmp_path / "run", config, ModelConfig(), tracking_config=tracking)

@@ -1,5 +1,6 @@
 """Scratch Qwen2 and the single digit-restricted autoregressive distribution."""
 
+import math
 from dataclasses import asdict, dataclass
 
 import torch
@@ -18,7 +19,7 @@ class ModelConfig:
     num_attention_heads: int = 4
     num_key_value_heads: int = 2
     intermediate_size: int = 512
-    max_position_embeddings: int = 512
+    max_position_embeddings: int = 1024
     hidden_act: str = "silu"
     rms_norm_eps: float = 1e-6
     rope_theta: float = 1_000_000.0
@@ -136,10 +137,36 @@ def make_optimizer(model, learning_rate, beta1, beta2, weight_decay, epsilon):
     }
 
 
-def make_scheduler(optimizer, warmup_steps):
-    if warmup_steps < 0:
-        raise ValueError("Negative warmup")
-    # Optimizer update s (1-based) uses base_lr * min(s/warmup, 1).
-    return torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda completed: min((completed + 1) / max(warmup_steps, 1), 1.0)
-    )
+def make_scheduler(optimizer, warmup_steps, max_steps, min_learning_rate, schedule):
+    if not 0 <= warmup_steps < max_steps:
+        raise ValueError("Require 0 <= warmup_steps < max_steps")
+    base_learning_rates = {group["lr"] for group in optimizer.param_groups}
+    if len(base_learning_rates) != 1:
+        raise ValueError("Scheduler requires one shared base learning rate")
+    (base_learning_rate,) = base_learning_rates
+    if base_learning_rate <= 0 or not 0 <= min_learning_rate <= base_learning_rate:
+        raise ValueError("Require base learning rate > 0 and 0 <= minimum learning rate <= base learning rate")
+    if schedule not in ("linear_warmup_cosine_decay", "linear_warmup_constant"):
+        raise ValueError(f"Unknown learning-rate schedule: {schedule}")
+    minimum_ratio = min_learning_rate / base_learning_rate
+
+    def multiplier(completed):
+        update = completed + 1
+        if warmup_steps and update <= warmup_steps:
+            if schedule == "linear_warmup_constant":
+                return minimum_ratio + (1.0 - minimum_ratio) * update / warmup_steps
+            if warmup_steps == 1:
+                return 1.0
+            return minimum_ratio + (1.0 - minimum_ratio) * (update - 1) / (warmup_steps - 1)
+        if schedule == "linear_warmup_constant":
+            return 1.0
+        if warmup_steps:
+            decay_progress = (update - warmup_steps) / (max_steps - warmup_steps)
+        else:
+            decay_progress = (update - 1) / max(max_steps - 1, 1)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * min(decay_progress, 1.0)))
+        return minimum_ratio + (1.0 - minimum_ratio) * cosine
+
+    # LambdaLR evaluates completed=0 at construction, so the optimizer's LR
+    # already matches update 1 before the first optimizer.step().
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)

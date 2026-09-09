@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults reproduce the 75K-step baseline; the sweep passes explicit overrides.
+# Defaults reproduce the current 80K-step n=64 experiment; the sweep passes explicit overrides.
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n16_10m_xy_range3_sigma0p01"
+DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_xy_range3_sigma0p001"
 RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
-GPU_ID=1
+GPU_ID=7
 ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
 BATCH_SIZE=128
 MICRO_BATCH_SIZE=128
-MAX_STEPS=75000
+MAX_STEPS=80000
 EVAL_INTERVAL=500
 LEARNING_RATE=1e-4
+MIN_LEARNING_RATE=1e-5
+LEARNING_RATE_SCHEDULE="linear_warmup_cosine_decay"
 BETA1=0.9
 BETA2=0.95
 WEIGHT_DECAY=0.01
 OPTIMIZER_EPSILON=1e-8
-WARMUP_STEPS=2000
+WARMUP_STEPS=1600
 MAX_GRAD_NORM=1.0
 TRAIN_EVAL_SIZE=1024
 EVAL_BATCH_SIZE=32
@@ -33,7 +35,7 @@ PROJECT_NAME="noisy-regression-sft"
 MODEL_CONFIG_JSON='{
   "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": 4,
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
-  "max_position_embeddings": 512, "hidden_act": "silu", "rms_norm_eps": 1e-6,
+  "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
   "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
   "use_sliding_window": false, "sliding_window": null,
   "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
@@ -42,12 +44,14 @@ MODEL_CONFIG_JSON='{
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--max-steps|--learning-rate|--warmup-steps|--run-name|--output-dir)
+    --gpu-id|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--run-name|--output-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
         --max-steps) MAX_STEPS="$2" ;;
         --learning-rate) LEARNING_RATE="$2" ;;
+        --min-learning-rate) MIN_LEARNING_RATE="$2" ;;
+        --learning-rate-schedule) LEARNING_RATE_SCHEDULE="$2" ;;
         --warmup-steps) WARMUP_STEPS="$2" ;;
         --run-name) RUN_NAME="$2" ;;
         --output-dir) OUTPUT_DIR="$2" ;;
@@ -58,7 +62,7 @@ while (( $# )); do
   esac
 done
 if [[ -z "${RUN_NAME}" ]]; then
-  RUN_NAME="qwen2_1m_d2_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_warmup${WARMUP_STEPS}_sigma0p01"
+  RUN_NAME="qwen2_1m_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_sigma0p001"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
@@ -109,7 +113,8 @@ python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "
   --device "${DEVICE}" --precision "${PRECISION}" \
   --batch-size "${BATCH_SIZE}" --micro-batch-size "${MICRO_BATCH_SIZE}" \
   --max-steps "${MAX_STEPS}" --eval-interval "${EVAL_INTERVAL}" \
-  --learning-rate "${LEARNING_RATE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
+  --learning-rate "${LEARNING_RATE}" --min-learning-rate "${MIN_LEARNING_RATE}" \
+  --learning-rate-schedule "${LEARNING_RATE_SCHEDULE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
   --weight-decay "${WEIGHT_DECAY}" --optimizer-epsilon "${OPTIMIZER_EPSILON}" \
   --warmup-steps "${WARMUP_STEPS}" --max-grad-norm "${MAX_GRAD_NORM}" \
   --train-eval-size "${TRAIN_EVAL_SIZE}" --eval-batch-size "${EVAL_BATCH_SIZE}" \

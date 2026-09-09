@@ -19,7 +19,7 @@ DELTA = (RANGE_MAX - RANGE_MIN) / 255
 CENTERS = RANGE_MIN + np.arange(256, dtype=np.float64) * DELTA
 MIDPOINTS = RANGE_MIN + (np.arange(255, dtype=np.float64) + 0.5) * DELTA
 DIMENSION = 2
-OBSERVATIONS = 16
+OBSERVATIONS = 64
 INPUT_TOKENS = 2 * DIMENSION
 OBSERVATION_TOKENS = INPUT_TOKENS + 4
 QUERY_OFFSET = 1 + OBSERVATIONS * OBSERVATION_TOKENS
@@ -55,7 +55,7 @@ def decode(tokens):
     return CENTERS[tokens[..., 0] * DIGITS + tokens[..., 1]]
 
 
-def build_sequences(context_x, context_y, query_x, query_y, capacity=512):
+def build_sequences(context_x, context_y, query_x, query_y, capacity=1024):
     count = len(context_x)
     if (
         context_x.shape != (count, OBSERVATIONS, DIMENSION)

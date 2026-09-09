@@ -78,7 +78,9 @@ for learning_rate in "${LEARNING_RATES[@]}"; do
   echo "Starting ${run_name} on GPU ${GPU_ID}; log: ${SWEEP_DIR}/logs/lr${learning_rate}.log"
   if bash "${REPO_ROOT}/noisy-regression/sft.sh" "${launch_args[@]}" \
     --gpu-id "${GPU_ID}" --max-steps "${MAX_STEPS}" --warmup-steps "${WARMUP_STEPS}" \
-    --learning-rate "${learning_rate}" --run-name "${run_name}" --output-dir "${output_dir}" \
+    --learning-rate "${learning_rate}" --min-learning-rate 0 \
+    --learning-rate-schedule linear_warmup_constant \
+    --run-name "${run_name}" --output-dir "${output_dir}" \
     >>"${SWEEP_DIR}/logs/lr${learning_rate}.log" 2>&1; then
     printf '%s\tcompleted\t%s\t%s\n' "${learning_rate}" "$(date -u +%FT%TZ)" "${output_dir}" \
       >>"${SWEEP_DIR}/status.tsv"
