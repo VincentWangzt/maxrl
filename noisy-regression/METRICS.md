@@ -181,9 +181,11 @@ be noisier and more optimistic than held-out MSE. Evaluation NPZ files contain
 only full-pool IDs and exact log probabilities. No completions are sampled.
 
 `train/gradient_norm` is the global L2 norm across all model parameter gradients
-after backward passes over the effective batch. Training does not clip it. The
-norm is logged with loss/LR at step 1 and then every `log_interval` steps (10 in
-the launcher); a nonfinite norm fails the update explicitly.
+after backward passes over the effective batch, before any optional clipping.
+`max_grad_norm` is recorded in the training configuration: `null` disables
+clipping (the default); a finite positive value caps the norm for the update.
+The norm is logged with loss/LR at step 1 and then every `log_interval` steps
+(10 in the launcher); a nonfinite norm fails the update explicitly in either mode.
 
 `elapsed_seconds` measures total wall time since the invocation started, including
 restored elapsed time on resume. `optimizer_step_seconds` measures the logged

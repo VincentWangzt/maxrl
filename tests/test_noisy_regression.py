@@ -1,5 +1,6 @@
 """Focused CPU checks. Run only on cmu-L40-live via noisy-regression/validate.sh."""
 
+import argparse
 import json
 import math
 import sys
@@ -59,7 +60,7 @@ from noisy_regression.model import (
 )
 from noisy_regression.references import bayesian_predictive, gaussian_bin_log_probs, reference_distributions
 from noisy_regression.tracking import TrackingConfig, event_metrics
-from noisy_regression.train import TrainConfig, load_checkpoint, optimize_step, save_checkpoint, train
+from noisy_regression.train import TrainConfig, load_checkpoint, optimize_step, parse_max_grad_norm, save_checkpoint, train
 from scipy.stats import binom
 
 
@@ -473,6 +474,54 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, learning_rate=1e-3), {})
 
 
+@pytest.mark.parametrize("max_grad_norm", [None, 10.0, 100.0])
+@pytest.mark.parametrize("micro_batch_size", [1, 4])
+def test_optimize_step_optional_gradient_clipping(monkeypatch, max_grad_norm, micro_batch_size):
+    # Every example has gradient (30, 40): norm 50 after batch averaging.
+    model = torch.nn.Linear(2, 1, bias=False)
+    torch.nn.init.zeros_(model.weight)
+    tokens = np.tile([30, 40], (8, 1))
+    monkeypatch.setattr("noisy_regression.train.teacher_forced_nll", lambda model, tokens: model(tokens.float()))
+    config = TrainConfig(batch_size=4, micro_batch_size=micro_batch_size, precision="fp32", max_grad_norm=max_grad_norm)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    metrics, _ = optimize_step(model, optimizer, scheduler, FrozenOrder(8), tokens, config, torch.device("cpu"))
+    expected_norm = 50.0 if max_grad_norm is None else min(50.0, max_grad_norm)
+    assert metrics["gradient_norm"] == pytest.approx(50.0)
+    assert model.weight.grad.norm().item() == pytest.approx(expected_norm)
+    torch.testing.assert_close(model.weight, torch.tensor([[-0.06, -0.08]]) * expected_norm)
+
+
+@pytest.mark.parametrize("max_grad_norm", [None, 10.0])
+def test_optimize_step_rejects_nonfinite_gradients(monkeypatch, max_grad_norm):
+    model = torch.nn.Linear(2, 1, bias=False)
+    initial_weights = model.weight.detach().clone()
+    monkeypatch.setattr(
+        "noisy_regression.train.teacher_forced_nll", lambda model, tokens: model(tokens.float()) * float("nan")
+    )
+    config = TrainConfig(batch_size=4, micro_batch_size=4, precision="fp32", max_grad_norm=max_grad_norm)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    initial_epoch = scheduler.last_epoch
+    with pytest.raises(RuntimeError, match="non-finite"):
+        optimize_step(model, optimizer, scheduler, FrozenOrder(8), np.ones((8, 2)), config, torch.device("cpu"))
+    torch.testing.assert_close(model.weight, initial_weights, atol=0, rtol=0)
+    assert scheduler.last_epoch == initial_epoch
+
+
+def test_optional_gradient_clip_configuration():
+    assert TrainConfig().max_grad_norm is None
+    assert parse_max_grad_norm("none") is None
+    assert parse_max_grad_norm("10.0") == 10.0
+    for norm in (None, 10.0):
+        TrainConfig(max_grad_norm=norm).validate({})
+    for norm in (0.0, -1.0, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="max_grad_norm"):
+            TrainConfig(max_grad_norm=norm).validate({})
+        with pytest.raises(argparse.ArgumentTypeError, match="max-grad-norm"):
+            parse_max_grad_norm(str(norm))
+
+
 def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     def reject_sampling(*args, **kwargs):
         raise AssertionError("Exact evaluation must not sample completions")
@@ -584,17 +633,18 @@ def recorded_wandb(monkeypatch):
     return recorded_run, init_arguments
 
 
-def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb, monkeypatch):
+@pytest.mark.parametrize("max_grad_norm", [None, 10.0])
+def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb, monkeypatch, max_grad_norm):
     recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.01))
     assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 128
-    assert "max_grad_norm" not in TrainConfig.__dataclass_fields__
-    monkeypatch.setattr(
-        torch.nn.utils,
-        "clip_grad_norm_",
-        lambda *args, **kwargs: pytest.fail("noisy-regression training must not clip gradients"),
-    )
+    if max_grad_norm is None:
+        monkeypatch.setattr(
+            torch.nn.utils,
+            "clip_grad_norm_",
+            lambda *args, **kwargs: pytest.fail("noisy-regression training must not clip gradients when disabled"),
+        )
     config = TrainConfig(
         batch_size=4,
         micro_batch_size=4,
@@ -606,6 +656,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         cpu_threads=1,
         log_interval=1,
         warmup_steps=0,
+        max_grad_norm=max_grad_norm,
     )
     tracking = TrackingConfig(True, "noisy-regression-sft", "cpu-validation")
     summary = train(pool, tmp_path / "run", config, ModelConfig(), tracking_config=tracking)
@@ -613,6 +664,8 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
+    assert init_arguments["config"]["max_grad_norm"] == max_grad_norm
+    assert json.loads((tmp_path / "run" / "manifest.json").read_text())["training"]["max_grad_norm"] == max_grad_norm
     assert init_arguments["config"]["dashboard_schema_version"] == 5
     assert init_arguments["config"]["dashboard_pass_k"] == [1, 4, 16, 64, 256]
     assert init_arguments["config"]["evaluation_prompts"] == 4

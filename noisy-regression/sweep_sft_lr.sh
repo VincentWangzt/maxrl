@@ -6,11 +6,12 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 GPU_ID=3
 MAX_STEPS=10000
 WARMUP_STEPS=500
+MAX_GRAD_NORM=none
 LEARNING_RATES=(1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4 2e-4 5e-4)
 ALLOW_GPU_SHARING=false
 RESUME=false
 if [[ $# -lt 1 || ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-  echo "Usage: bash noisy-regression/sweep_sft_lr.sh SWEEP_NAME [--resume] [--allow-gpu-sharing]" >&2
+  echo "Usage: bash noisy-regression/sweep_sft_lr.sh SWEEP_NAME [--max-grad-norm none|VALUE] [--resume] [--allow-gpu-sharing]" >&2
   exit 2
 fi
 SWEEP_NAME="$1"
@@ -19,6 +20,11 @@ while (( $# )); do
   case "$1" in
     --resume) RESUME=true ;;
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true ;;
+    --max-grad-norm)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
+      MAX_GRAD_NORM="$2"
+      shift
+      ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -28,15 +34,15 @@ mkdir -p "${REPO_ROOT}/noisy-regression/checkpoints"
 exec 9>"${REPO_ROOT}/noisy-regression/checkpoints/.sft_gpu${GPU_ID}.lock"
 flock -n 9 || { echo "Another SFT sweep has reserved GPU ${GPU_ID}." >&2; exit 1; }
 sweep_settings="$(
-  printf 'sweep=%s\ngpu=%s\nmax_steps=%s\nwarmup_steps=%s\n' \
-    "${SWEEP_NAME}" "${GPU_ID}" "${MAX_STEPS}" "${WARMUP_STEPS}"
+  printf 'sweep=%s\ngpu=%s\nmax_steps=%s\nwarmup_steps=%s\nmax_grad_norm=%s\n' \
+    "${SWEEP_NAME}" "${GPU_ID}" "${MAX_STEPS}" "${WARMUP_STEPS}" "${MAX_GRAD_NORM}"
   printf 'learning_rates=%s\n' "${LEARNING_RATES[*]}"
 )"
 if [[ "${RESUME}" == true ]]; then
   [[ -f "${SWEEP_DIR}/status.tsv" && -d "${SWEEP_DIR}/logs" ]] || {
     echo "No existing sweep to resume: ${SWEEP_DIR}" >&2; exit 1;
   }
-  recorded_settings="$(head -n 5 "${SWEEP_DIR}/config.txt")"
+  recorded_settings="$(head -n 6 "${SWEEP_DIR}/config.txt")"
   [[ "${recorded_settings}" == "${sweep_settings}" ]] || {
     echo "Existing sweep configuration differs from this launcher." >&2; exit 1;
   }
@@ -78,6 +84,7 @@ for learning_rate in "${LEARNING_RATES[@]}"; do
   echo "Starting ${run_name} on GPU ${GPU_ID}; log: ${SWEEP_DIR}/logs/lr${learning_rate}.log"
   if bash "${REPO_ROOT}/noisy-regression/sft.sh" "${launch_args[@]}" \
     --gpu-id "${GPU_ID}" --max-steps "${MAX_STEPS}" --warmup-steps "${WARMUP_STEPS}" \
+    --max-grad-norm "${MAX_GRAD_NORM}" \
     --learning-rate "${learning_rate}" --min-learning-rate 0 \
     --learning-rate-schedule linear_warmup_constant \
     --run-name "${run_name}" --output-dir "${output_dir}" \

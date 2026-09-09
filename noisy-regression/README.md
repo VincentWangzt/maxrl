@@ -69,8 +69,10 @@ attention and no dropout/sliding window/EOS. The 20-token vocabulary and
 **987,776** trainable parameters are unchanged from the preceding run.
 
 AdamW uses peak LR **1e-4**, betas `(0.9,0.95)`, epsilon `1e-8`, weight
-decay `0.01`, and no gradient clipping. The global L2 gradient norm is still
-logged as a diagnostic, and nonfinite gradients fail explicitly. The first
+decay `0.01`, and no gradient clipping by default (`--max-grad-norm none`).
+Set `--max-grad-norm 10.0` (or another finite positive value) to cap the global
+L2 norm after accumulating the effective batch. The norm before clipping is
+logged in either mode, and nonfinite gradients fail explicitly. The first
 **1,600 updates (2%)**
 linearly warm from **1e-5** to **1e-4** inclusive. The remaining 78,400 updates
 cosine-decay to **1e-5** at update 80,000. For one-based update `s`, the warmup
@@ -94,6 +96,8 @@ run these commands on the server from `~/maxrl`:
 bash noisy-regression/validate.sh
 bash noisy-regression/prepare.sh
 bash noisy-regression/sft.sh
+# Fresh clipped run; use a unique name if the default output already exists:
+bash noisy-regression/sft.sh --gpu-id 0 --max-grad-norm 10.0 --run-name UNIQUE_CLIP10_RUN
 # Optional final-checkpoint reevaluation:
 bash noisy-regression/evaluate.sh
 # CPU baselines on this same new evaluation pool:
@@ -114,7 +118,9 @@ queue nine fresh SFT runs sequentially on **GPU 3**. Rates are
 **10,000 steps** and **500 linear warmup steps from zero, then constant LR**.
 The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
 same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
-every 500 steps. No run clips gradients. Each run sees 1.28M
+every 500 steps. Clipping defaults to `none`; pass `--max-grad-norm 10.0` to
+the sweep launcher to apply that cap to every run. The selected cap is recorded
+in `config.txt` and must match when resuming the queue. Each run sees 1.28M
 distinct training examples (0.128 passes). Initialization and training order
 remain independently random per run, so this single-run sweep does not isolate
 seed variability.

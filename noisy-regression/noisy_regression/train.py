@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import platform
 import random
@@ -38,6 +39,7 @@ class TrainConfig:
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
     warmup_steps: int = 1_600
+    max_grad_norm: float | None = None
     eval_batch_size: int = 32
     device: str = "cuda:0"
     precision: str = "bf16"
@@ -68,6 +70,8 @@ class TrainConfig:
             or self.weight_decay < 0
         ):
             raise ValueError("Invalid optimizer settings")
+        if self.max_grad_norm is not None and (not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0):
+            raise ValueError("max_grad_norm must be None or a finite positive value")
 
 
 def rng_state():
@@ -149,11 +153,17 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
             loss = nll.sum() / config.batch_size
         loss.backward()
         loss_sum += nll.detach().sum()
-    gradient_norm = torch.nn.utils.get_total_norm(
-        (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
-        norm_type=2.0,
-        error_if_nonfinite=True,
-    )
+    if config.max_grad_norm is None:
+        gradient_norm = torch.nn.utils.get_total_norm(
+            (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
+            norm_type=2.0,
+            error_if_nonfinite=True,
+        )
+    else:
+        # Report the global norm before clipping, after all microbatches accumulate.
+        gradient_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), config.max_grad_norm, norm_type=2.0, error_if_nonfinite=True
+        )
     lr = optimizer.param_groups[0]["lr"]
     optimizer.step()
     scheduler.step()
@@ -388,6 +398,15 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     return summary
 
 
+def parse_max_grad_norm(value):
+    if value == "none":
+        return None
+    norm = float(value)
+    if not math.isfinite(norm) or norm <= 0:
+        raise argparse.ArgumentTypeError("max-grad-norm must be 'none' or a finite positive value")
+    return norm
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
@@ -403,7 +422,8 @@ def main():
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )
     for name, field in TrainConfig.__dataclass_fields__.items():
-        parser.add_argument(f"--{name.replace('_', '-')}", type=type(field.default), default=field.default)
+        argument_type = parse_max_grad_norm if name == "max_grad_norm" else type(field.default)
+        parser.add_argument(f"--{name.replace('_', '-')}", type=argument_type, default=field.default)
     args = vars(parser.parse_args())
     data, output, resume = args.pop("data"), args.pop("output"), args.pop("resume")
     model_config = ModelConfig(**json.loads(args.pop("model_config_json")))

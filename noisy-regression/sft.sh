@@ -25,6 +25,7 @@ BETA2=0.95
 WEIGHT_DECAY=0.01
 OPTIMIZER_EPSILON=1e-8
 WARMUP_STEPS=1600
+MAX_GRAD_NORM=none
 EVAL_BATCH_SIZE=32
 CPU_THREADS=4
 LOG_INTERVAL=10
@@ -42,7 +43,7 @@ MODEL_CONFIG_JSON='{
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--run-name|--output-dir)
+    --gpu-id|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--max-grad-norm|--run-name|--output-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
@@ -51,6 +52,7 @@ while (( $# )); do
         --min-learning-rate) MIN_LEARNING_RATE="$2" ;;
         --learning-rate-schedule) LEARNING_RATE_SCHEDULE="$2" ;;
         --warmup-steps) WARMUP_STEPS="$2" ;;
+        --max-grad-norm) MAX_GRAD_NORM="$2" ;;
         --run-name) RUN_NAME="$2" ;;
         --output-dir) OUTPUT_DIR="$2" ;;
       esac
@@ -60,7 +62,11 @@ while (( $# )); do
   esac
 done
 if [[ -z "${RUN_NAME}" ]]; then
-  RUN_NAME="qwen2_1m_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_noclip_sigma0p001"
+  clip_label="clip${MAX_GRAD_NORM}"
+  if [[ "${MAX_GRAD_NORM}" == none ]]; then
+    clip_label=noclip
+  fi
+  RUN_NAME="qwen2_1m_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
@@ -114,7 +120,7 @@ python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "
   --learning-rate "${LEARNING_RATE}" --min-learning-rate "${MIN_LEARNING_RATE}" \
   --learning-rate-schedule "${LEARNING_RATE_SCHEDULE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
   --weight-decay "${WEIGHT_DECAY}" --optimizer-epsilon "${OPTIMIZER_EPSILON}" \
-  --warmup-steps "${WARMUP_STEPS}" \
+  --warmup-steps "${WARMUP_STEPS}" --max-grad-norm "${MAX_GRAD_NORM}" \
   --eval-batch-size "${EVAL_BATCH_SIZE}" \
   --cpu-threads "${CPU_THREADS}" --log-interval "${LOG_INTERVAL}"
 exec python -m noisy_regression.report --run "${OUTPUT_DIR}"
