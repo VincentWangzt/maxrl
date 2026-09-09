@@ -69,7 +69,9 @@ attention and no dropout/sliding window/EOS. The 20-token vocabulary and
 **987,776** trainable parameters are unchanged from the preceding run.
 
 AdamW uses peak LR **1e-4**, betas `(0.9,0.95)`, epsilon `1e-8`, weight
-decay `0.01`, and gradient clipping at 1.0. The first **1,600 updates (2%)**
+decay `0.01`, and no gradient clipping. The global L2 gradient norm is still
+logged as a diagnostic, and nonfinite gradients fail explicitly. The first
+**1,600 updates (2%)**
 linearly warm from **1e-5** to **1e-4** inclusive. The remaining 78,400 updates
 cosine-decay to **1e-5** at update 80,000. For one-based update `s`, the warmup
 is `1e-5 + 9e-5*(s-1)/1599`; after warmup it is
@@ -112,8 +114,7 @@ queue nine fresh SFT runs sequentially on **GPU 3**. Rates are
 **10,000 steps** and **500 linear warmup steps from zero, then constant LR**.
 The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
 same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
-every 500 steps. It records and passes the gradient-norm cap explicitly so a
-resumed queue cannot silently mix clipping regimes. Each run sees 1.28M
+every 500 steps. No run clips gradients. Each run sees 1.28M
 distinct training examples (0.128 passes). Initialization and training order
 remain independently random per run, so this single-run sweep does not isolate
 seed variability.
@@ -179,7 +180,7 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_clip10.0_sigma0p001/`,
+- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

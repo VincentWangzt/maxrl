@@ -38,7 +38,6 @@ class TrainConfig:
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
     warmup_steps: int = 1_600
-    max_grad_norm: float = 10.0
     eval_batch_size: int = 32
     device: str = "cuda:0"
     precision: str = "bf16"
@@ -64,7 +63,7 @@ class TrainConfig:
         if (
             not 0 <= self.beta1 < 1
             or not 0 <= self.beta2 < 1
-            or min(self.learning_rate, self.optimizer_epsilon, self.max_grad_norm) <= 0
+            or min(self.learning_rate, self.optimizer_epsilon) <= 0
             or not 0 <= self.min_learning_rate <= self.learning_rate
             or self.weight_decay < 0
         ):
@@ -150,10 +149,10 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
             loss = nll.sum() / config.batch_size
         loss.backward()
         loss_sum += nll.detach().sum()
-    # clip_grad_norm_ returns the global norm BEFORE clipping, preserving spikes
-    # in the logged value even when gradients are scaled down for the update.
-    gradient_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(), config.max_grad_norm, norm_type=2.0, error_if_nonfinite=True
+    gradient_norm = torch.nn.utils.get_total_norm(
+        (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
+        norm_type=2.0,
+        error_if_nonfinite=True,
     )
     lr = optimizer.param_groups[0]["lr"]
     optimizer.step()
@@ -161,7 +160,7 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     return (
         {
             "answer_nll": loss_sum.item() / config.batch_size,
-            "gradient_norm_before_clip": float(gradient_norm),
+            "gradient_norm": float(gradient_norm),
             "learning_rate": lr,
         },
         indices,
@@ -398,7 +397,7 @@ def main():
     parser.add_argument("--project-name", default="noisy-regression-sft")
     parser.add_argument(
         "--experiment-name",
-        default="qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_clip10.0_sigma0p001",
+        default="qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001",
     )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"

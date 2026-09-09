@@ -39,7 +39,7 @@ def event_metrics(event):
         metrics.update(
             {
                 "train/answer_nll": event["answer_nll"],
-                "train/gradient_norm_before_clip": event["gradient_norm_before_clip"],
+                "train/gradient_norm": event["gradient_norm"],
                 "train/learning_rate": event["learning_rate"],
                 "timing/optimizer_step_seconds": event["optimizer_step_seconds"],
             }
@@ -104,7 +104,7 @@ def initialize_tracking(config, output_path, run_config, metadata):
             **run_config,
             "dataset": metadata["config"],
             "dataset_hashes": {split: item["content_sha256"] for split, item in metadata["splits"].items()},
-            "dashboard_schema_version": 4,
+            "dashboard_schema_version": 5,
             "dashboard_pass_k": list(DASHBOARD_KS),
             "evaluation_prompts": metadata["config"]["eval_count"],
             "metric_targets": {

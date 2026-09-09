@@ -584,12 +584,17 @@ def recorded_wandb(monkeypatch):
     return recorded_run, init_arguments
 
 
-def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb):
+def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorded_wandb, monkeypatch):
     recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.01))
     assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 128
-    assert TrainConfig().max_grad_norm == 10.0
+    assert "max_grad_norm" not in TrainConfig.__dataclass_fields__
+    monkeypatch.setattr(
+        torch.nn.utils,
+        "clip_grad_norm_",
+        lambda *args, **kwargs: pytest.fail("noisy-regression training must not clip gradients"),
+    )
     config = TrainConfig(
         batch_size=4,
         micro_batch_size=4,
@@ -608,7 +613,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
-    assert init_arguments["config"]["dashboard_schema_version"] == 4
+    assert init_arguments["config"]["dashboard_schema_version"] == 5
     assert init_arguments["config"]["dashboard_pass_k"] == [1, 4, 16, 64, 256]
     assert init_arguments["config"]["evaluation_prompts"] == 4
     assert init_arguments["config"]["method"] == "sft"
@@ -660,8 +665,8 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
             assert "diagnostics/context_shuffle_nll_increase" not in values
         if step:
             assert "train/answer_nll" in values and "train/learning_rate" in values
-            norm = values["train/gradient_norm_before_clip"]
-            assert norm == optimizations[step]["gradient_norm_before_clip"]
+            norm = values["train/gradient_norm"]
+            assert norm == optimizations[step]["gradient_norm"]
             assert math.isfinite(norm) and norm > 0
             assert 0 < values["timing/optimizer_step_seconds"] < values["timing/elapsed_seconds"]
     # New numeric artifact diagnostics must never silently become dashboard panels.

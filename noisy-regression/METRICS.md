@@ -155,7 +155,7 @@ a learned method's run, and there is no `reference/` metric namespace.
 |---|---|---:|
 | `eval` | `{mse,nll}/{clean,noisy}` | 4 |
 | `pass@k_exact` | `pass@{1,4,16,64,256}/{clean,noisy}` | 10 |
-| `train` | `answer_nll`, `learning_rate`, `gradient_norm_before_clip` | 3 |
+| `train` | `answer_nll`, `learning_rate`, `gradient_norm` | 3 |
 | `train_batch` | `mse/{clean,noisy}` on the just-optimized batch | 2 |
 | `diagnostics` | `predictive_entropy_nats`, final-only `context_shuffle_nll_increase` | 2 |
 | `timing` | `elapsed_seconds`, `optimizer_step_seconds`, `evaluation_seconds` | 3 |
@@ -180,11 +180,10 @@ immediate training fit, not a stable population estimate, so it is expected to
 be noisier and more optimistic than held-out MSE. Evaluation NPZ files contain
 only full-pool IDs and exact log probabilities. No completions are sampled.
 
-`train/gradient_norm_before_clip` is the global L2 norm across all model
-parameter gradients after backward passes over the effective batch, before
-gradient clipping. It is logged with loss/LR at step 1 and then every
-`log_interval` steps (10 in the launcher). Values above the clipping threshold
-are expected and useful; the metric does not report the capped gradient norm.
+`train/gradient_norm` is the global L2 norm across all model parameter gradients
+after backward passes over the effective batch. Training does not clip it. The
+norm is logged with loss/LR at step 1 and then every `log_interval` steps (10 in
+the launcher); a nonfinite norm fails the update explicitly.
 
 `elapsed_seconds` measures total wall time since the invocation started, including
 restored elapsed time on resume. `optimizer_step_seconds` measures the logged
