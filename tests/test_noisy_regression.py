@@ -32,7 +32,6 @@ from noisy_regression.data import (
     FrozenOrder,
     array_hash,
     clipping_summary,
-    fixed_training_indices,
     generate_split,
     load_pool,
     prepare,
@@ -159,9 +158,7 @@ def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
     monkeypatch.setattr(np.random, "default_rng", entropy_rng)
     generate_split(DatasetConfig(train_count=8, eval_count=4), "train")
     FrozenOrder(8)
-    indices = fixed_training_indices(100, 8)
-    assert len(np.unique(indices)) == 8 and ((indices >= 0) & (indices < 100)).all()
-    assert calls == [((), {}), ((), {}), ((), {})]
+    assert calls == [((), {}), ((), {})]
     assert not any("seed" in name for name in TrainConfig.__dataclass_fields__)
     assert not any("seed" in name for name in DatasetConfig.__dataclass_fields__)
 
@@ -440,7 +437,6 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         batch_size=4,
         micro_batch_size=2,
         max_steps=3,
-        train_eval_size=4,
         device="cpu",
         precision="fp32",
         warmup_steps=2,
@@ -458,19 +454,18 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     )
     order = FrozenOrder(8)
     device = torch.device("cpu")
-    first_step = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
-    assert first_step["learning_rate"] == config.min_learning_rate
+    first_metrics, first_indices = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
+    assert first_metrics["learning_rate"] == config.min_learning_rate
+    assert first_indices.shape == (config.batch_size,)
     checkpoint = tmp_path / "checkpoint"
-    training_indices = np.array([0, 2, 4, 6])
-    save_checkpoint(
-        checkpoint, model, optimizer, scheduler, order, 1, config, {}, {}, 0, {}, training_indices=training_indices
-    )
-    expected = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
+    save_checkpoint(checkpoint, model, optimizer, scheduler, order, 1, config, {}, {}, 0, {})
+    expected_metrics, expected_indices = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     expected_weights = {name: value.clone() for name, value in model.state_dict().items()}
     restored_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, config, {})
-    np.testing.assert_array_equal(restored_state["train_evaluation_indices"], training_indices)
-    actual = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
-    assert actual == expected
+    assert "train_evaluation_indices" not in restored_state
+    actual_metrics, actual_indices = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
+    assert actual_metrics == expected_metrics
+    np.testing.assert_array_equal(actual_indices, expected_indices)
     assert order.presentations == 8
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, expected_weights[name], atol=0, rtol=0)
@@ -490,7 +485,6 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
         micro_batch_size=2,
         max_steps=2,
         eval_interval=1,
-        train_eval_size=4,
         eval_batch_size=2,
         device="cpu",
         precision="fp32",
@@ -507,7 +501,14 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     pools, _ = load_pool(pool)
     for event in evaluations:
         assert "generation" not in event["eval"]
-        for metric_group in (event["train"], event["eval"]):
+        metric_groups = [event["eval"]]
+        if event["step"]:
+            assert event["train_batch"]["prompts"] == config.batch_size
+            assert len(event["train_batch_ids"]) == config.batch_size
+            metric_groups.append(event["train_batch"])
+        else:
+            assert "train_batch" not in event and "train_batch_ids" not in event
+        for metric_group in metric_groups:
             assert "first_token_nll" not in metric_group
             assert "second_token_conditional_nll" not in metric_group
         with np.load(tmp_path / "run" / f"evaluation-{event['step']:05d}.npz") as archive:
@@ -540,12 +541,12 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     assert "Conditional sampling" not in rendered
     for filename in ("learning_curves.png", "pass_at_k.png"):
         assert (tmp_path / "run" / filename).stat().st_size > 0
-    # With no subset seed, resume must recover the original saved diagnostic IDs.
+    # Resume must recover the order, including the exact batch used by the next evaluation.
     resumed = tmp_path / "resumed"
     train(pool, resumed, config, ModelConfig(), resume=tmp_path / "run" / "checkpoint-00001")
-    original_manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
-    resumed_manifest = json.loads((resumed / "manifest.json").read_text())
-    assert original_manifest["train_evaluation_ids"] == resumed_manifest["train_evaluation_ids"]
+    resumed_events = [json.loads(line) for line in (resumed / "metrics.jsonl").read_text().splitlines()]
+    resumed_final = [event for event in resumed_events if event["kind"] == "evaluation"][-1]
+    assert resumed_final["train_batch_ids"] == evaluations[-1]["train_batch_ids"]
     from safetensors.torch import load_file
 
     original_weights = load_file(str(tmp_path / "run" / "checkpoint-00002" / "model.safetensors"))
@@ -594,7 +595,6 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         micro_batch_size=4,
         max_steps=2,
         eval_interval=1,
-        train_eval_size=4,
         eval_batch_size=2,
         device="cpu",
         precision="fp32",
@@ -628,9 +628,12 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         assert (
             values["eval/mse/noisy"] == evaluation["predictive_mean_errors"]["continuous_noisy_outcome"]["mse"]["mean"]
         )
-        train_errors = evaluations[step]["train"]["predictive_mean_errors"]
-        assert values["train_probe/mse/clean"] == train_errors["continuous_noiseless_signal"]["mse"]["mean"]
-        assert values["train_probe/mse/noisy"] == train_errors["continuous_noisy_outcome"]["mse"]["mean"]
+        if step:
+            train_errors = evaluations[step]["train_batch"]["predictive_mean_errors"]
+            assert values["train_batch/mse/clean"] == train_errors["continuous_noiseless_signal"]["mse"]["mean"]
+            assert values["train_batch/mse/noisy"] == train_errors["continuous_noisy_outcome"]["mse"]["mean"]
+        else:
+            assert not any(key.startswith("train_batch/") for key in values)
         assert {key for key in values if key.startswith("pass")} == {
             f"pass@k_exact/pass@{k}/{target}" for target in ("clean", "noisy") for k in (1, 4, 16, 64, 256)
         }
@@ -648,7 +651,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
             key.startswith(("reference/", "train_eval/", "trainer/", "progress/", "regression/", "likelihood/"))
             for key in values
         )
-        assert len(values) == (19 if step == 0 else 24 if step == 2 else 23)
+        assert len(values) == (17 if step == 0 else 24 if step == 2 else 23)
         if step == 2:
             assert values["diagnostics/context_shuffle_nll_increase"] == pytest.approx(
                 evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
@@ -665,7 +668,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     final_event = evaluations[2]
     curated = event_metrics(final_event)
     final_event["eval"]["future_diagnostic"] = {"mean": 123, "prompts": 4}
-    final_event["train"]["future_diagnostic"] = {"mean": 456, "prompts": 4}
+    final_event["train_batch"]["future_diagnostic"] = {"mean": 456, "prompts": 4}
     assert "generation" not in final_event["eval"]
     assert event_metrics(final_event) == curated
     assert "prompt_se" in final_event["eval"]["answer_nll"]

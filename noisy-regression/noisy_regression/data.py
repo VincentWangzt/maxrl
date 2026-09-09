@@ -175,11 +175,6 @@ def subset(arrays, indices):
     return {name: value[indices] for name, value in arrays.items()}
 
 
-def fixed_training_indices(train_count, train_eval_size):
-    """Select once per new run; checkpoint the indices for later evaluations/resume."""
-    return np.random.default_rng().choice(train_count, size=train_eval_size, replace=False)
-
-
 class FrozenOrder:
     """A resumable shuffled index stream; never mutates or regenerates examples."""
 

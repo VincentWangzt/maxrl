@@ -17,7 +17,7 @@ import transformers
 from transformers import AutoModelForCausalLM
 
 from noisy_regression.codec import CONTEXT_SLICE, save_codec
-from noisy_regression.data import DatasetConfig, FrozenOrder, fixed_training_indices, load_pool, subset, write_json
+from noisy_regression.data import DatasetConfig, FrozenOrder, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
 from noisy_regression.references import reference_report
@@ -39,7 +39,6 @@ class TrainConfig:
     optimizer_epsilon: float = 1e-8
     warmup_steps: int = 1_600
     max_grad_norm: float = 10.0
-    train_eval_size: int = 1024
     eval_batch_size: int = 32
     device: str = "cuda:0"
     precision: str = "bf16"
@@ -58,8 +57,6 @@ class TrainConfig:
         )
         if min(integers) < 1 or self.batch_size % self.micro_batch_size:
             raise ValueError("Positive sizes required; effective batch must be divisible by microbatch")
-        if not 1 <= self.train_eval_size <= len(splits["train"]["tokens"]):
-            raise ValueError("Evaluation subset size exceeds its pool")
         if not 0 <= self.warmup_steps < self.max_steps:
             raise ValueError("Require 0 <= warmup_steps < max_steps")
         if self.learning_rate_schedule not in ("linear_warmup_cosine_decay", "linear_warmup_constant"):
@@ -91,9 +88,7 @@ def restore_rng(state):
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
-def save_checkpoint(
-    path, model, optimizer, scheduler, order, step, config, metadata, best, elapsed, metrics, *, training_indices
-):
+def save_checkpoint(path, model, optimizer, scheduler, order, step, config, metadata, best, elapsed, metrics):
     path = Path(path)
     temporary = path.with_name(path.name + ".incomplete")
     temporary.mkdir(parents=True, exist_ok=False)
@@ -109,7 +104,6 @@ def save_checkpoint(
             "order": order.state_dict(),
             "step": step,
             "rng": rng_state(),
-            "train_evaluation_indices": training_indices,
             "best": best,
             "elapsed_seconds": elapsed,
         },
@@ -133,14 +127,6 @@ def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
     # Only load trusted checkpoints produced by this experiment; optimizer/RNG
     # state includes Python and NumPy objects, not just tensors.
     state = torch.load(path / "trainer_state.pt", map_location="cpu", weights_only=False)
-    indices = state["train_evaluation_indices"]
-    if (
-        indices.shape != (config.train_eval_size,)
-        or indices.dtype.kind not in "iu"
-        or len(np.unique(indices)) != len(indices)
-        or np.any((indices < 0) | (indices >= order.count))
-    ):
-        raise ValueError("Invalid checkpoint training-evaluation subset")
     optimizer.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
     order.load_state_dict(state["order"])
@@ -172,11 +158,14 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     lr = optimizer.param_groups[0]["lr"]
     optimizer.step()
     scheduler.step()
-    return {
-        "answer_nll": loss_sum.item() / config.batch_size,
-        "gradient_norm_before_clip": float(gradient_norm),
-        "learning_rate": lr,
-    }
+    return (
+        {
+            "answer_nll": loss_sum.item() / config.batch_size,
+            "gradient_norm_before_clip": float(gradient_norm),
+            "learning_rate": lr,
+        },
+        indices,
+    )
 
 
 def train(data_path, output_path, config, model_config, resume=None, tracking_config=None):
@@ -210,10 +199,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         step, previous_elapsed, best = state["step"], state["elapsed_seconds"], state["best"]
         if step >= config.max_steps:
             raise ValueError("Checkpoint has already finished the requested optimizer steps")
-        training_indices = state["train_evaluation_indices"]
-    else:
-        training_indices = fixed_training_indices(len(splits["train"]["tokens"]), config.train_eval_size)
-    train_eval = subset(splits["train"], training_indices)
     versions = {
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -253,11 +238,10 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "data_path": str(Path(data_path).resolve()),
         "resume_from": str(Path(resume).resolve()) if resume else None,
-        "train_evaluation_ids": train_eval["ids"].tolist(),
         "deterministic_algorithms": True,
-        "randomness": "Fresh initialization, shuffle and diagnostic subset; no fixed seeds",
+        "randomness": "Fresh initialization and training shuffle; no fixed seeds",
         "likelihood_units": "nats per complete two-token answer",
-        "subset_policy": "Train subset drawn once per run and checkpointed; evaluation uses the full held-out pool",
+        "evaluation_policy": "Full held-out pool plus the just-optimized training batch at evaluation steps",
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
@@ -297,22 +281,21 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         if tracker is not None:
             tracker.record(event)
         if event["kind"] == "evaluation":
-            print(
-                json.dumps(
-                    {
-                        "step": event["step"],
-                        "train_nll": event["train"]["answer_nll"]["mean"],
-                        "held_out_nll": event["eval"]["answer_nll"]["mean"],
-                        "exact_pass1": event["eval"]["exact_pass"]["1"]["mean"],
-                        "elapsed_seconds": event["elapsed_seconds"],
-                    }
-                ),
-                flush=True,
-            )
+            printed = {
+                "step": event["step"],
+                "held_out_nll": event["eval"]["answer_nll"]["mean"],
+                "exact_pass1": event["eval"]["exact_pass"]["1"]["mean"],
+                "elapsed_seconds": event["elapsed_seconds"],
+            }
+            if "train_batch" in event:
+                printed["train_batch_clean_mse"] = event["train_batch"]["predictive_mean_errors"][
+                    "continuous_noiseless_signal"
+                ]["mse"]["mean"]
+            print(json.dumps(printed), flush=True)
         else:
             print(json.dumps(event), flush=True)
 
-    def evaluate_and_save(current_step):
+    def evaluate_and_save(current_step, train_batch_indices=None):
         nonlocal best
         evaluation_started = time.perf_counter()
         checkpoint = output_path / f"checkpoint-{current_step:05d}"
@@ -321,7 +304,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             "kind": "evaluation",
             "step": current_step,
             "presentations": order.presentations,
-            "train": evaluate(model, train_eval, config.eval_batch_size, device, config.precision),
             "eval": evaluate(
                 model,
                 splits["eval"],
@@ -331,6 +313,16 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                 output_path / f"evaluation-{current_step:05d}.npz",
             ),
         }
+        if train_batch_indices is not None:
+            train_batch = subset(splits["train"], train_batch_indices)
+            metrics["train_batch"] = evaluate(
+                model,
+                train_batch,
+                config.eval_batch_size,
+                device,
+                config.precision,
+            )
+            metrics["train_batch_ids"] = train_batch["ids"].tolist()
         if final:
             control_tokens = splits["eval"]["tokens"].copy()
             control_tokens[:, CONTEXT_SLICE] = np.roll(control_tokens[:, CONTEXT_SLICE], 1, axis=0)
@@ -355,7 +347,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             best,
             elapsed,
             metrics,
-            training_indices=training_indices,
         )
         write_json(output_path / "best_checkpoint.json", best)
         return metrics
@@ -365,12 +356,14 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     first_step = step + 1
     for step in range(first_step, config.max_steps + 1):
         optimizer_step_started = time.perf_counter()
-        step_metrics = optimize_step(model, optimizer, scheduler, order, splits["train"]["tokens"], config, device)
+        step_metrics, train_batch_indices = optimize_step(
+            model, optimizer, scheduler, order, splits["train"]["tokens"], config, device
+        )
         step_metrics["optimizer_step_seconds"] = time.perf_counter() - optimizer_step_started
         if step % config.log_interval == 0 or step == 1:
             emit({"kind": "optimization", "step": step, "presentations": order.presentations, **step_metrics})
         if step % config.eval_interval == 0 or step == config.max_steps:
-            evaluate_and_save(step)
+            evaluate_and_save(step, train_batch_indices)
     elapsed = previous_elapsed + time.perf_counter() - started
     summary = {
         "final_checkpoint": str(output_path / f"checkpoint-{step:05d}"),

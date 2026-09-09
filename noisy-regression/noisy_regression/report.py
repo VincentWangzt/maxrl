@@ -32,11 +32,23 @@ def render_report(run):
     if not evaluations:
         raise ValueError("No evaluations have been recorded")
     final = evaluations[-1]
+    optimizations = [event for event in events if event["kind"] == "optimization"]
     summary = json.loads((run / "summary.json").read_text()) if (run / "summary.json").exists() else None
     steps = [event["step"] for event in evaluations]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
-    for split, label in (("train", "Fixed training subset"), ("eval", "Held-out evaluation")):
-        axes[0].plot(steps, [event[split]["answer_nll"]["mean"] for event in evaluations], marker=".", label=label)
+    if optimizations:
+        axes[0].plot(
+            [event["step"] for event in optimizations],
+            [event["answer_nll"] for event in optimizations],
+            alpha=0.65,
+            label="Training minibatch (pre-update)",
+        )
+    axes[0].plot(
+        steps,
+        [event["eval"]["answer_nll"]["mean"] for event in evaluations],
+        marker=".",
+        label="Held-out evaluation",
+    )
     for name in (
         "query_only_continuous_optimistic",
         "bayesian_continuous_optimistic",

@@ -114,9 +114,9 @@ The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
 same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
 every 500 steps. It records and passes the gradient-norm cap explicitly so a
 resumed queue cannot silently mix clipping regimes. Each run sees 1.28M
-distinct training examples (0.128 passes).
-Initialization, training order and diagnostic subset remain independently
-random per run, so this single-run sweep does not isolate seed variability.
+distinct training examples (0.128 passes). Initialization and training order
+remain independently random per run, so this single-run sweep does not isolate
+seed variability.
 
 Outputs are under `noisy-regression/checkpoints/UNIQUE_SWEEP_NAME/lrRATE/`,
 with per-run logs in `logs/`, configuration in `config.txt`, and append-only
@@ -146,21 +146,20 @@ are sampled. One cached prefill plus 16 second-digit branches obtains these
 probabilities. Checkpoints and exact per-prompt probabilities are retained.
 
 W&B uses 24 curated history keys in `eval`, `pass@k_exact`, `train`,
-`train_probe`, `diagnostics` and `timing`. MSE and NLL use
+`train_batch`, `diagnostics` and `timing`. MSE and NLL use
 `eval/{mse,nll}/{clean,noisy}`; exact pass uses
 `pass@k_exact/pass@{1,4,16,64,256}/{clean,noisy}`. MSE compares the exact
 predictive mean with continuous targets; NLL and pass score quantized targets.
 Detailed uncertainties remain in local artifacts. See [METRICS.md](METRICS.md).
 
-A training probe uses a random 1,024-example subset selected once per new run.
-Its exact clean/noisy predictive-mean MSE is logged as `train_probe/mse/*`, and
-its NLL remains in the offline artifacts. The indices are stored in each
-checkpoint and recovered on resume, so the diagnostic compares the same
-examples throughout a run. This fixed probe is deliberately used instead of
-the transient optimizer minibatch: it is less noisy and gives a meaningful
-train/held-out comparison. Held-out evaluation always uses the complete
-evaluation pool. A final context-mismatch control measures dependence on the
-context while preserving each query/target.
+At each nonzero evaluation step, the post-update model also enumerates the exact
+distribution on the just-optimized 128-example batch. Its clean/noisy MSE is
+logged as `train_batch/mse/*`, and the batch IDs plus complete distribution
+summary remain in the JSONL artifact. This measures immediate training fit,
+not a stable population estimate, so it is expected to be noisier and more
+optimistic than held-out MSE. Step 0 has no training batch. Held-out evaluation
+always uses the complete evaluation pool. A final context-mismatch control
+measures dependence on the context while preserving each query/target.
 
 Bayesian and decoded-input ridge are separate baseline methods with the same
 evaluation keys. The continuous Bayesian reference sees extra precision; ridge
@@ -169,8 +168,8 @@ from the new pool's metadata. Their run names include `d2_n64_10m_xy_range3_sigm
 
 To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
 the complete training configuration unchanged. A checkpoint restores model,
-optimizer, scheduler, shuffle/cursor, diagnostic subset, and Python/NumPy/
-Torch/CUDA RNG state. The best pointer can reference an earlier run directory.
+optimizer, scheduler, shuffle/cursor, and Python/NumPy/Torch/CUDA RNG state.
+The best pointer can reference an earlier run directory.
 A resumed invocation starts a new W&B run with `resume_from` recorded.
 
 ## Artifacts
@@ -191,5 +190,5 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
 Focused server CPU checks cover fresh generation/frozen persistence, hashes,
 split separation, the shared markers and answer-only loss, model parameter
 count/causality, exact cached distributions, Gaussian references, W&B keys,
-and full optimizer/diagnostic-subset recovery on resume. Test-only seeds make
+and full optimizer/training-order recovery on resume. Test-only seeds make
 numerical checks repeatable; experiment code does not set fixed seeds.

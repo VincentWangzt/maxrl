@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults configure the current 80K-step n=64 setup; the sweep passes explicit overrides.
+# Defaults reproduce the current 80K-step n=64 experiment; the sweep passes explicit overrides.
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
@@ -26,7 +26,6 @@ WEIGHT_DECAY=0.01
 OPTIMIZER_EPSILON=1e-8
 WARMUP_STEPS=1600
 MAX_GRAD_NORM=10.0
-TRAIN_EVAL_SIZE=1024
 EVAL_BATCH_SIZE=32
 CPU_THREADS=4
 LOG_INTERVAL=10
@@ -118,6 +117,6 @@ python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "
   --learning-rate-schedule "${LEARNING_RATE_SCHEDULE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
   --weight-decay "${WEIGHT_DECAY}" --optimizer-epsilon "${OPTIMIZER_EPSILON}" \
   --warmup-steps "${WARMUP_STEPS}" --max-grad-norm "${MAX_GRAD_NORM}" \
-  --train-eval-size "${TRAIN_EVAL_SIZE}" --eval-batch-size "${EVAL_BATCH_SIZE}" \
+  --eval-batch-size "${EVAL_BATCH_SIZE}" \
   --cpu-threads "${CPU_THREADS}" --log-interval "${LOG_INTERVAL}"
 exec python -m noisy_regression.report --run "${OUTPUT_DIR}"

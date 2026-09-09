@@ -46,12 +46,12 @@ def event_metrics(event):
         )
     elif event["kind"] == "evaluation":
         metrics.update(evaluation_metrics(event["eval"]))
-        if "train" in event:
-            train_errors = event["train"]["predictive_mean_errors"]
+        if "train_batch" in event:
+            train_errors = event["train_batch"]["predictive_mean_errors"]
             metrics.update(
                 {
-                    "train_probe/mse/clean": train_errors["continuous_noiseless_signal"]["mse"]["mean"],
-                    "train_probe/mse/noisy": train_errors["continuous_noisy_outcome"]["mse"]["mean"],
+                    "train_batch/mse/clean": train_errors["continuous_noiseless_signal"]["mse"]["mean"],
+                    "train_batch/mse/noisy": train_errors["continuous_noisy_outcome"]["mse"]["mean"],
                 }
             )
         metrics["timing/evaluation_seconds"] = event["evaluation_seconds"]
