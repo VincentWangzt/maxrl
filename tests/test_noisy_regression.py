@@ -216,8 +216,10 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
             np.testing.assert_array_equal(changed[name], baseline[name])
         for name in ("context_noise", "query_noise"):
             np.testing.assert_allclose(changed[name], baseline[name] * (sigma / config.sigma))
-        assert not np.array_equal(changed["tokens"][:, :129], baseline["tokens"][:, :129])
-        np.testing.assert_array_equal(changed["tokens"][:, 129:135], baseline["tokens"][:, 129:135])
+        assert not np.array_equal(changed["tokens"][:, CONTEXT_SLICE], baseline["tokens"][:, CONTEXT_SLICE])
+        np.testing.assert_array_equal(
+            changed["tokens"][:, QUERY_OFFSET:PROMPT_LENGTH], baseline["tokens"][:, QUERY_OFFSET:PROMPT_LENGTH]
+        )
         assert not np.array_equal(changed["tokens"][:, -2:], baseline["tokens"][:, -2:])
 
     context_x = np.tile(np.eye(2), (1, 8, 1))
@@ -299,7 +301,7 @@ def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     torch.testing.assert_close(
         original_logits[:, : PROMPT_LENGTH + 1], modified_logits[:, : PROMPT_LENGTH + 1], rtol=0, atol=0
     )
-    with pytest.raises(ValueError, match="135-token"):
+    with pytest.raises(ValueError, match=f"{PROMPT_LENGTH}-token"):
         conditional_log_probs(model, tokens)
 
 
