@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GPU 1 and the 10,000,000-example pool were explicitly selected by the user.
+# Defaults reproduce the 75K-step baseline; the sweep passes explicit overrides.
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n16_10m_xy_range3_sigma0p01"
-RUN_NAME="qwen2_1m_d2_10m_xy_range3_sft_75000_bs128_lr1e-4_warmup2000_sigma0p01"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
+RUN_NAME=""
+OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
 GPU_ID=1
 DEVICE="cuda:0"
@@ -29,7 +29,6 @@ CPU_THREADS=4
 LOG_INTERVAL=10
 USE_WANDB=true
 PROJECT_NAME="noisy-regression-sft"
-EXPERIMENT_NAME="${RUN_NAME}"
 MODEL_CONFIG_JSON='{
   "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": 4,
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
@@ -38,6 +37,31 @@ MODEL_CONFIG_JSON='{
   "use_sliding_window": false, "sliding_window": null,
   "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
 }'
+
+while (( $# )); do
+  case "$1" in
+    --gpu-id|--max-steps|--learning-rate|--warmup-steps|--run-name|--output-dir)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
+      case "$1" in
+        --gpu-id) GPU_ID="$2" ;;
+        --max-steps) MAX_STEPS="$2" ;;
+        --learning-rate) LEARNING_RATE="$2" ;;
+        --warmup-steps) WARMUP_STEPS="$2" ;;
+        --run-name) RUN_NAME="$2" ;;
+        --output-dir) OUTPUT_DIR="$2" ;;
+      esac
+      shift 2
+      ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [[ -z "${RUN_NAME}" ]]; then
+  RUN_NAME="qwen2_1m_d2_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_warmup${WARMUP_STEPS}_sigma0p01"
+fi
+if [[ -z "${OUTPUT_DIR}" ]]; then
+  OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
+fi
+EXPERIMENT_NAME="${RUN_NAME}"
 
 source "${VENV_DIR}/bin/activate"
 if [[ -f "${ENV_FILE}" ]]; then

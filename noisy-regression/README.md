@@ -99,6 +99,26 @@ SFT enables online W&B logging in `noisy-regression-sft` and requires
 `WANDB_API_KEY`. GPU launchers check that GPU 1 has no existing compute process.
 Dataset generation and validation run on CPU. Output directories must be new.
 
+### Quick learning-rate sweep
+
+Run `bash noisy-regression/sweep_sft_lr.sh UNIQUE_SWEEP_NAME` on the server to
+queue nine fresh SFT runs sequentially on **GPU 3**. Rates are
+`1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4`; each uses
+**10,000 steps** and **500 linear warmup steps, then constant LR**.
+The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
+same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
+every 500 steps. Each run sees 1.28M distinct training examples (0.128 passes).
+Initialization, training order and diagnostic subset remain independently
+random per run, so this single-run sweep does not isolate seed variability.
+
+Outputs are under `noisy-regression/checkpoints/UNIQUE_SWEEP_NAME/lrRATE/`,
+with per-run logs in `logs/`, configuration in `config.txt`, and append-only
+progress in `status.tsv`. All runs share the W&B group `UNIQUE_SWEEP_NAME`
+in `noisy-regression-sft`. Each completed run produces the usual checkpoints,
+metrics, plots and report. A failed run stops the queue and records its exit
+code. The sweep reserves a GPU-specific lock and checks for compute processes
+before each run. Use a detached server session to survive SSH disconnects.
+
 ## Evaluation and checkpoints
 
 At step 0, every **500 updates**, and step 75,000, evaluation enumerates the
