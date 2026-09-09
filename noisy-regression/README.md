@@ -6,7 +6,7 @@ Independent synthetic autoregressive SFT experiment. All Python execution is on
 ## Current experiment
 
 The current launchers prepare **10,000,000 frozen training examples** and
-**1,024 held-out evaluation examples**, then train on **GPU 7** for
+**1,024 held-out evaluation examples**, then train on **GPU 0** for
 **80,000 optimizer steps**, batch **128**, microbatch **128**. This makes
 **10,240,000 presentations**, or **1.024 pool passes**: every training example
 is seen once, followed by 240,000 examples from a fresh shuffle of the same pool.
@@ -101,7 +101,7 @@ bash noisy-regression/evaluate_ridge.sh
 
 Launchers use explicit configuration blocks, the server `.venv`, and `.env`.
 SFT enables online W&B logging in `noisy-regression-sft` and requires
-`WANDB_API_KEY`. GPU launchers check that GPU 7 has no existing compute process.
+`WANDB_API_KEY`. GPU launchers check that GPU 0 has no existing compute process.
 Dataset generation and validation run on CPU. Output directories must be new.
 
 ### Quick learning-rate sweep
