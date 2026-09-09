@@ -113,6 +113,7 @@ exec python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.ppo_mini_batch_size=${TRAIN_BATCH_SIZE} \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${ACTOR_MICRO_BATCH_SIZE} \
   actor_rollout_ref.rollout.name=hf \
+  "actor_rollout_ref.rollout.completion_token_ids=[7]" \
   +actor_rollout_ref.rollout.micro_batch_size=4096 \
   actor_rollout_ref.rollout.dtype=float16 \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4096 \

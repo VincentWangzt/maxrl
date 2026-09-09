@@ -26,10 +26,8 @@ import torch.distributed
 from tensordict import TensorDict
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from transformers import GenerationConfig
 from tqdm import tqdm
-
-logger = logging.getLogger(__name__)
+from transformers import GenerationConfig
 
 from verl import DataProto
 from verl.utils.device import get_device_name, get_torch_device
@@ -37,7 +35,18 @@ from verl.utils.torch_functional import get_response_mask
 
 from .base import BaseRollout
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["HFRollout"]
+
+
+def _merge_eos_token_ids(eos_token_id: int | list[int], completion_token_ids) -> int | list[int]:
+    """Append task-completion tokens to the model EOS tokens without duplicates."""
+    if not completion_token_ids:
+        return eos_token_id
+
+    eos_token_ids = [eos_token_id] if isinstance(eos_token_id, int) else list(eos_token_id)
+    return list(dict.fromkeys([*eos_token_ids, *completion_token_ids]))
 
 
 class HFRollout(BaseRollout):
@@ -164,7 +173,10 @@ class HFRollout(BaseRollout):
         position_ids = prompts.batch["position_ids"]
 
         # used to construct attention_mask
-        eos_token_id = prompts.meta_info["eos_token_id"]
+        eos_token_id = _merge_eos_token_ids(
+            prompts.meta_info["eos_token_id"],
+            self.config.get("completion_token_ids", []),
+        )
         pad_token_id = prompts.meta_info["pad_token_id"]
 
         self.module.eval()

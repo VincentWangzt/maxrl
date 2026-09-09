@@ -27,6 +27,7 @@ from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
+    count_complete_responses,
     process_validation_metrics,
 )
 from verl.utils.metric import (
@@ -119,6 +120,29 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("critic/score/mean", metrics)
         self.assertIn("critic/rewards/mean", metrics)
         self.assertIn("response_length/mean", metrics)
+
+
+class TestCountCompleteResponses(unittest.TestCase):
+    def test_counts_each_response_once(self):
+        responses = torch.tensor(
+            [
+                [4, 7, 0, 0],
+                [7, 7, 0, 0],
+                [4, 5, 6, 0],
+                [4, 9, 0, 0],
+            ]
+        )
+
+        self.assertEqual(count_complete_responses(responses, [7, 9]), 3)
+
+    def test_empty_completion_tokens(self):
+        responses = torch.tensor([[4, 7], [7, 0]])
+
+        self.assertEqual(count_complete_responses(responses, []), 0)
+
+    def test_rejects_non_matrix_responses(self):
+        with self.assertRaisesRegex(ValueError, "2D tensor"):
+            count_complete_responses(torch.tensor([4, 7]), [7])
 
 
 class TestComputeTimingMetrics(unittest.TestCase):

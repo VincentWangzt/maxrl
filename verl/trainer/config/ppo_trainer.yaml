@@ -431,6 +431,10 @@ actor_rollout_ref:
     # typically the same as data max response length
     response_length: ${data.max_response_length}
 
+    # Task-completion token IDs. The HF rollout treats these as additional EOS
+    # tokens and reports their presence in evaluation responses.
+    completion_token_ids: []
+
     # for vllm rollout
     # Rollout model parameters type. Align with actor model's FSDP/Megatron type.
     dtype: bfloat16

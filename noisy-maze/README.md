@@ -90,6 +90,8 @@ sequences raise an error instead of truncating the solution.
 RL starts from this variant's selected SFT checkpoint, with 32 prompts per training step,
 128 rollouts per prompt, LR 5e-5, 200 epochs (6,400 steps), and no KL penalty.
 MaxRL, GRPO, and RLOO share the existing script style and optimizer settings.
+HF rollout stops on DONE (token ID 7) or `<eos>`. Validation logs the global
+`eval/complete_response_rate`, the fraction of generated responses containing DONE.
 Evaluation uses 128 held-out mazes with 256 samples each, before training and
 every 64 steps; checkpoints are saved every 64 steps. `LR=1e-4` selects the
 alternate learning rate and gives it a separate run name.

@@ -180,6 +180,21 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
     return metrics
 
 
+def count_complete_responses(responses: torch.Tensor, completion_token_ids: list[int]) -> int:
+    """Count responses containing at least one configured task-completion token."""
+    if responses.ndim != 2:
+        raise ValueError(f"responses must be a 2D tensor, got shape {tuple(responses.shape)}")
+    if not completion_token_ids:
+        return 0
+
+    completion_tokens = torch.tensor(
+        completion_token_ids,
+        dtype=responses.dtype,
+        device=responses.device,
+    )
+    return torch.isin(responses, completion_tokens).any(dim=-1).sum().item()
+
+
 def compute_timing_metrics(batch: DataProto, timing_raw: Dict[str, float]) -> Dict[str, Any]:
     """
     Computes timing metrics for different processing stages in PPO training.

@@ -31,7 +31,7 @@ from typing import Optional, Type
 import numpy as np
 import ray
 import torch
-from omegaconf import OmegaConf, open_dict
+from omegaconf import ListConfig, OmegaConf, open_dict
 from torch.utils.data import Dataset, Sampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
@@ -47,6 +47,7 @@ from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
+    count_complete_responses,
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
@@ -467,6 +468,20 @@ class RayPPOTrainer:
 
     def _validate_config(self):
         config = self.config
+
+        completion_token_ids = config.actor_rollout_ref.rollout.get("completion_token_ids", [])
+        if not isinstance(completion_token_ids, (list, tuple, ListConfig)):
+            raise TypeError("actor_rollout_ref.rollout.completion_token_ids must be a list of token IDs")
+        completion_token_ids = list(completion_token_ids)
+        if any(not isinstance(token_id, int) or isinstance(token_id, bool) for token_id in completion_token_ids):
+            raise TypeError("actor_rollout_ref.rollout.completion_token_ids must contain only integers")
+        if any(token_id < 0 for token_id in completion_token_ids):
+            raise ValueError("actor_rollout_ref.rollout.completion_token_ids must contain only nonnegative token IDs")
+        if len(completion_token_ids) != len(set(completion_token_ids)):
+            raise ValueError("actor_rollout_ref.rollout.completion_token_ids must not contain duplicates")
+        if completion_token_ids and config.actor_rollout_ref.rollout.name != "hf":
+            raise ValueError("actor_rollout_ref.rollout.completion_token_ids is supported only by the HF rollout")
+
         # number of GPUs total
         n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
         if config.actor_rollout_ref.actor.strategy == "megatron":
@@ -703,6 +718,10 @@ class RayPPOTrainer:
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
+        completion_token_ids = list(self.config.actor_rollout_ref.rollout.get("completion_token_ids", []))
+        complete_response_count = 0
+        complete_response_total = 0
+
         # Lists to collect samples for the table
         sample_inputs = []
         sample_outputs = []
@@ -822,6 +841,12 @@ class RayPPOTrainer:
                     
                     # Decode output texts for this round
                     round_output_ids = round_output.batch["responses"]
+                    if completion_token_ids:
+                        complete_response_count += count_complete_responses(
+                            round_output_ids,
+                            completion_token_ids,
+                        )
+                        complete_response_total += round_output_ids.shape[0]
                     round_output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in round_output_ids]
                     sample_outputs.extend(round_output_texts)
                     
@@ -1078,6 +1103,9 @@ class RayPPOTrainer:
 
             # Store generated outputs
             output_ids = test_output_gen_batch.batch["responses"]
+            if completion_token_ids:
+                complete_response_count += count_complete_responses(output_ids, completion_token_ids)
+                complete_response_total += output_ids.shape[0]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
@@ -1210,6 +1238,9 @@ class RayPPOTrainer:
             print(f"[Validation] math500_all: {mask.sum()} samples from {len(found_levels)} levels")
             print(f"[Validation] math500_all metrics: {list(math500_all_result.get('math500_all', {}).keys())}")
         metric_dict = {}
+        if complete_response_total > 0:
+            metric_dict["eval/complete_response_rate"] = complete_response_count / complete_response_total
+
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
             for var_name, metric2val in var2metric2val.items():

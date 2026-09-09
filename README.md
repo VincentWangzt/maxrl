@@ -127,7 +127,7 @@ or you can skip the SFT stage and use `maze/ckpt-1500`, which is a checkpoint af
 
 **RL**
 
-Setup path configurations in `maze/maze_17.sh`, then `bash maze/maze_17.sh`. Make sure to set `actor_rollout_ref.rollout.name=hf`, which significantly accelerates generation for very small models during RL training.
+Setup path configurations in `maze/maze_17.sh`, then `bash maze/maze_17.sh`. Make sure to set `actor_rollout_ref.rollout.name=hf`, which significantly accelerates generation for very small models during RL training. The maze launchers also configure DONE (token ID 7) as a task-completion token, so HF generation stops on DONE or `<eos>` and validation logs the global `eval/complete_response_rate`.
 
 ### 23x23 Maze
 
