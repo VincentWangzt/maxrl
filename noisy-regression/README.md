@@ -119,6 +119,18 @@ metrics, plots and report. A failed run stops the queue and records its exit
 code. The sweep reserves a GPU-specific lock and checks for compute processes
 before each run. Use a detached server session to survive SSH disconnects.
 
+Pass `--allow-gpu-sharing` to explicitly permit sharing GPU 3 with existing
+compute processes; both workloads then compete for GPU resources. This flag is
+also available on `sft.sh`. The sweep lock only excludes other copies of this
+sweep launcher; it does not reserve the device against unrelated jobs.
+
+To continue a stopped queue, run
+`bash noisy-regression/sweep_sft_lr.sh UNIQUE_SWEEP_NAME --resume --allow-gpu-sharing`
+when sharing is intended. Queue resumption verifies the saved sweep settings,
+skips completed runs, and appends to existing logs and status records. It starts
+only rates with no existing output directory. A partially trained run requires
+explicit checkpoint recovery through `sft.sh`; it is never overwritten.
+
 ## Evaluation and checkpoints
 
 At step 0, every **500 updates**, and step 75,000, evaluation enumerates the

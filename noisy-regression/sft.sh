@@ -10,6 +10,7 @@ RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
 GPU_ID=1
+ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
 BATCH_SIZE=128
@@ -40,6 +41,7 @@ MODEL_CONFIG_JSON='{
 
 while (( $# )); do
   case "$1" in
+    --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
     --gpu-id|--max-steps|--learning-rate|--warmup-steps|--run-name|--output-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
@@ -75,9 +77,14 @@ if [[ "${USE_WANDB}" == true && -z "${WANDB_API_KEY:-}" ]]; then
 fi
 [[ ! -e "${OUTPUT_DIR}" ]] || { echo "Refusing to overwrite ${OUTPUT_DIR}" >&2; exit 1; }
 nvidia-smi --id="${GPU_ID}" --query-gpu=index --format=csv,noheader,nounits >/dev/null
-if nvidia-smi --id="${GPU_ID}" --query-compute-apps=pid --format=csv,noheader,nounits | grep -Eq '[0-9]'; then
-  echo "Selected GPU ${GPU_ID} has a compute process; refusing to overlap workloads." >&2
-  exit 1
+gpu_processes="$(nvidia-smi --id="${GPU_ID}" --query-compute-apps=pid --format=csv,noheader,nounits)"
+if [[ "${gpu_processes}" =~ [0-9] ]]; then
+  if [[ "${ALLOW_GPU_SHARING}" == true ]]; then
+    echo "Sharing GPU ${GPU_ID} with existing compute processes (--allow-gpu-sharing)."
+  else
+    echo "Selected GPU ${GPU_ID} has a compute process; refusing to overlap workloads." >&2
+    exit 1
+  fi
 fi
 export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 export PYTHONPATH="${REPO_ROOT}/noisy-regression:${REPO_ROOT}"
