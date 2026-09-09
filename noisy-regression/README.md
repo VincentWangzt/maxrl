@@ -112,7 +112,9 @@ queue nine fresh SFT runs sequentially on **GPU 3**. Rates are
 **10,000 steps** and **500 linear warmup steps from zero, then constant LR**.
 The launcher reuses `sft.sh` with explicit command-line overrides, keeping the
 same 10M pool, batch/microbatch 128, architecture, optimizer, and evaluation
-every 500 steps. Each run sees 1.28M distinct training examples (0.128 passes).
+every 500 steps. It records and passes the gradient-norm cap explicitly so a
+resumed queue cannot silently mix clipping regimes. Each run sees 1.28M
+distinct training examples (0.128 passes).
 Initialization, training order and diagnostic subset remain independently
 random per run, so this single-run sweep does not isolate seed variability.
 
@@ -143,18 +145,22 @@ complete 256-answer distribution for all 1,024 held-out prompts. No completions
 are sampled. One cached prefill plus 16 second-digit branches obtains these
 probabilities. Checkpoints and exact per-prompt probabilities are retained.
 
-W&B uses the existing 22 curated history keys in `eval`, `pass@k_exact`,
-`train`, `diagnostics` and `timing`. MSE and NLL use
+W&B uses 24 curated history keys in `eval`, `pass@k_exact`, `train`,
+`train_probe`, `diagnostics` and `timing`. MSE and NLL use
 `eval/{mse,nll}/{clean,noisy}`; exact pass uses
 `pass@k_exact/pass@{1,4,16,64,256}/{clean,noisy}`. MSE compares the exact
 predictive mean with continuous targets; NLL and pass score quantized targets.
 Detailed uncertainties remain in local artifacts. See [METRICS.md](METRICS.md).
 
-Offline training NLL uses a random 1,024-example subset selected once per new
-run. Its indices are stored in each checkpoint and recovered on resume, so
-the diagnostic compares the same examples throughout a run. Held-out
-evaluation always uses the complete evaluation pool. A final context-mismatch
-control measures dependence on the context while preserving each query/target.
+A training probe uses a random 1,024-example subset selected once per new run.
+Its exact clean/noisy predictive-mean MSE is logged as `train_probe/mse/*`, and
+its NLL remains in the offline artifacts. The indices are stored in each
+checkpoint and recovered on resume, so the diagnostic compares the same
+examples throughout a run. This fixed probe is deliberately used instead of
+the transient optimizer minibatch: it is less noisy and gives a meaningful
+train/held-out comparison. Held-out evaluation always uses the complete
+evaluation pool. A final context-mismatch control measures dependence on the
+context while preserving each query/target.
 
 Bayesian and decoded-input ridge are separate baseline methods with the same
 evaluation keys. The continuous Bayesian reference sees extra precision; ridge
@@ -174,7 +180,7 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_sigma0p001/`,
+- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_clip10.0_sigma0p001/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

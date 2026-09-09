@@ -46,6 +46,14 @@ def event_metrics(event):
         )
     elif event["kind"] == "evaluation":
         metrics.update(evaluation_metrics(event["eval"]))
+        if "train" in event:
+            train_errors = event["train"]["predictive_mean_errors"]
+            metrics.update(
+                {
+                    "train_probe/mse/clean": train_errors["continuous_noiseless_signal"]["mse"]["mean"],
+                    "train_probe/mse/noisy": train_errors["continuous_noisy_outcome"]["mse"]["mean"],
+                }
+            )
         metrics["timing/evaluation_seconds"] = event["evaluation_seconds"]
     else:
         raise ValueError(f"Unknown metric event kind: {event['kind']}")
@@ -96,7 +104,7 @@ def initialize_tracking(config, output_path, run_config, metadata):
             **run_config,
             "dataset": metadata["config"],
             "dataset_hashes": {split: item["content_sha256"] for split, item in metadata["splits"].items()},
-            "dashboard_schema_version": 3,
+            "dashboard_schema_version": 4,
             "dashboard_pass_k": list(DASHBOARD_KS),
             "evaluation_prompts": metadata["config"]["eval_count"],
             "metric_targets": {

@@ -38,7 +38,7 @@ class TrainConfig:
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
     warmup_steps: int = 1_600
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 10.0
     train_eval_size: int = 1024
     eval_batch_size: int = 32
     device: str = "cuda:0"
@@ -321,7 +321,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             "kind": "evaluation",
             "step": current_step,
             "presentations": order.presentations,
-            "train": likelihood(model, train_eval["tokens"], config.eval_batch_size, device, config.precision),
+            "train": evaluate(model, train_eval, config.eval_batch_size, device, config.precision),
             "eval": evaluate(
                 model,
                 splits["eval"],
@@ -405,7 +405,7 @@ def main():
     parser.add_argument("--project-name", default="noisy-regression-sft")
     parser.add_argument(
         "--experiment-name",
-        default="qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_sigma0p001",
+        default="qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_clip10.0_sigma0p001",
     )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"

@@ -588,6 +588,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.01))
     assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 128
+    assert TrainConfig().max_grad_norm == 10.0
     config = TrainConfig(
         batch_size=4,
         micro_batch_size=4,
@@ -607,7 +608,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
-    assert init_arguments["config"]["dashboard_schema_version"] == 3
+    assert init_arguments["config"]["dashboard_schema_version"] == 4
     assert init_arguments["config"]["dashboard_pass_k"] == [1, 4, 16, 64, 256]
     assert init_arguments["config"]["evaluation_prompts"] == 4
     assert init_arguments["config"]["method"] == "sft"
@@ -627,6 +628,9 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
         assert (
             values["eval/mse/noisy"] == evaluation["predictive_mean_errors"]["continuous_noisy_outcome"]["mse"]["mean"]
         )
+        train_errors = evaluations[step]["train"]["predictive_mean_errors"]
+        assert values["train_probe/mse/clean"] == train_errors["continuous_noiseless_signal"]["mse"]["mean"]
+        assert values["train_probe/mse/noisy"] == train_errors["continuous_noisy_outcome"]["mse"]["mean"]
         assert {key for key in values if key.startswith("pass")} == {
             f"pass@k_exact/pass@{k}/{target}" for target in ("clean", "noisy") for k in (1, 4, 16, 64, 256)
         }
@@ -644,7 +648,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
             key.startswith(("reference/", "train_eval/", "trainer/", "progress/", "regression/", "likelihood/"))
             for key in values
         )
-        assert len(values) == (17 if step == 0 else 22 if step == 2 else 21)
+        assert len(values) == (19 if step == 0 else 24 if step == 2 else 23)
         if step == 2:
             assert values["diagnostics/context_shuffle_nll_increase"] == pytest.approx(
                 evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
@@ -661,7 +665,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     final_event = evaluations[2]
     curated = event_metrics(final_event)
     final_event["eval"]["future_diagnostic"] = {"mean": 123, "prompts": 4}
-    del final_event["train"]
+    final_event["train"]["future_diagnostic"] = {"mean": 456, "prompts": 4}
     assert "generation" not in final_event["eval"]
     assert event_metrics(final_event) == curated
     assert "prompt_se" in final_event["eval"]["answer_nll"]

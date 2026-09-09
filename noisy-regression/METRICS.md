@@ -144,7 +144,7 @@ included sampled pass, exact pass on the same subset, their difference,
 uncertainty/counts for every k, sampled-mean MSE, and scalar sampling settings.
 Most keys were supporting statistics or metadata, not independent outcomes.
 
-## Current dashboard: 22 history keys for training
+## Current dashboard: 24 history keys for training
 
 Logging now selects named metrics explicitly. Adding a number to an evaluation
 artifact can no longer silently create another panel. Each method has its own
@@ -156,6 +156,7 @@ a learned method's run, and there is no `reference/` metric namespace.
 | `eval` | `{mse,nll}/{clean,noisy}` | 4 |
 | `pass@k_exact` | `pass@{1,4,16,64,256}/{clean,noisy}` | 10 |
 | `train` | `answer_nll`, `learning_rate`, `gradient_norm_before_clip` | 3 |
+| `train_probe` | `mse/{clean,noisy}` on one fixed 1,024-example training subset | 2 |
 | `diagnostics` | `predictive_entropy_nats`, final-only `context_shuffle_nll_increase` | 2 |
 | `timing` | `elapsed_seconds`, `optimizer_step_seconds`, `evaluation_seconds` | 3 |
 
@@ -165,18 +166,20 @@ does not demonstrate correct regression inference. Entropy measures predictive
 spread and has no universal better direction.
 
 There are no dashboard SEs, normal-95% bounds, prompt counts, sampled scores,
-train-eval scores, grid-target errors, repeated sampling settings, or progress
-section. Invalid distributions still fail validation in the evaluator. Fixed
-dataset sizes and method settings live in run config. W&B's native step is the
-optimizer step; no duplicate step metric is logged.
+training-probe NLL/pass scores, grid-target errors, repeated sampling settings,
+or progress section. Invalid distributions still fail validation in the
+evaluator. Fixed dataset sizes and method settings live in run config. W&B's
+native step is the optimizer step; no duplicate step metric is logged.
 
-Every dashboard MSE/NLL/pass metric uses all 1,024 held-out examples at every
+Every `eval` MSE/NLL/pass metric uses all 1,024 held-out examples at every
 evaluation, including step 0 and the final step. The evaluator enumerates all
 256 answers and does not sample completions, including for the offline report.
 New evaluation NPZ files contain only full-pool IDs and exact log probabilities.
 Sampling helpers remain available for focused numerical checks, and historical
-sample artifacts remain untouched. The separate fixed-training-subset NLL is
-still retained offline, with no dashboard dependency on it.
+sample artifacts remain untouched. At the same evaluation cadence, the fixed
+training probe also enumerates all 256 answers. Its exact predictive-mean MSE
+is logged for a like-for-like train/held-out comparison; its NLL and remaining
+distribution summary stay offline.
 
 `train/gradient_norm_before_clip` is the global L2 norm across all model
 parameter gradients after backward passes over the effective batch, before
@@ -194,7 +197,7 @@ time measures its analytical distribution and metric calculation, excluding
 dataset loading and artifact writing. These are wall times, not GPU kernel times.
 
 Best NLL/step and checkpoint paths are recorded once in the run summary.
-The 22-key count excludes W&B's own system metrics and these summary fields.
+The 24-key count excludes W&B's own system metrics and these summary fields.
 Checkpoint selection still uses the lowest noisy evaluation NLL. New evaluation
 artifacts add `clean_answer_nll` and `clean_exact_pass` alongside the existing
 noisy fields; previously saved artifacts are not rewritten.
