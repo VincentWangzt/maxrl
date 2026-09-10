@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_xy_range3_sigma0p001"
+DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d1_n64_10m_xy_range3_sigma0p001"
 RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
@@ -71,7 +71,7 @@ if [[ -z "${RUN_NAME}" ]]; then
   if [[ "${MAX_GRAD_NORM}" == none ]]; then
     clip_label=noclip
   fi
-  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
+  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_d1_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"

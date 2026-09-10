@@ -150,7 +150,7 @@ def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
     if metadata["schema_version"] != 4:
-        raise ValueError("Dataset schema mismatch: prepare a new d=2, n=64 pool with the [-3,3] codec")
+        raise ValueError("Dataset schema mismatch: prepare a new d=1, n=64 pool with the [-3,3] codec")
     if metadata["codec"] != codec_config() or json.loads((directory / "codec.json").read_text()) != codec_config():
         raise ValueError("Dataset codec mismatch: scalar range and prompt layout must match the running code")
     DatasetConfig(**metadata["config"]).validate()

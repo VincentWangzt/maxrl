@@ -15,7 +15,10 @@ from noisy_regression.codec import (
     CENTERS,
     CONTEXT_SLICE,
     DELTA,
+    DIMENSION,
+    INPUT_TOKENS,
     MIDPOINTS,
+    OBSERVATION_TOKENS,
     OBSERVATIONS,
     PROMPT_LENGTH,
     QUERY_OFFSET,
@@ -124,9 +127,9 @@ def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     assert set(metadata["splits"]) == {"train", "eval"}
     assert metadata["schema_version"] == 4
     assert metadata["codec"]["range"] == [-3, 3]
-    assert metadata["codec"]["dimension"] == 2
+    assert metadata["codec"]["dimension"] == 1
     assert metadata["codec"]["observations"] == 64
-    assert metadata["codec"]["prompt_length"] == 519
+    assert metadata["codec"]["prompt_length"] == 389
     assert metadata["config"]["sigma"] == 0.001
     assert not any("seed" in name for name in metadata["config"])
     assert not set(pools["train"]["prompt_hashes"]) & set(pools["eval"]["prompt_hashes"])
@@ -166,21 +169,23 @@ def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
 
 def test_prompt_layout_and_no_latent_leakage(arrays):
     tokens = arrays["tokens"]
-    assert OBSERVATIONS == 64 and PROMPT_LENGTH == 519 and SEQUENCE_LENGTH == 521
+    assert DIMENSION == 1 and OBSERVATIONS == 64 and PROMPT_LENGTH == 389 and SEQUENCE_LENGTH == 391
     assert tokens.shape == (8, SEQUENCE_LENGTH)
     assert (tokens[:, 0] == BOS).all() and (tokens[:, QUERY_OFFSET] == X).all()
     assert (tokens[:, PROMPT_LENGTH - 1] == Y).all()
     assert len(VOCAB) == 20 and "[QUERY]" not in VOCAB and "[ANSWER]" not in VOCAB
     assert tokens.max() < len(VOCAB)
     for i in range(OBSERVATIONS):
-        offset = 1 + 8 * i
-        assert (tokens[:, offset] == X).all() and (tokens[:, offset + 5] == Y).all()
+        offset = 1 + OBSERVATION_TOKENS * i
+        assert (tokens[:, offset] == X).all() and (tokens[:, offset + INPUT_TOKENS + 1] == Y).all()
         np.testing.assert_array_equal(
-            tokens[:, offset + 1 : offset + 5], encode(arrays["context_x"][:, i]).reshape(8, 4)
+            tokens[:, offset + 1 : offset + INPUT_TOKENS + 1],
+            encode(arrays["context_x"][:, i]).reshape(8, INPUT_TOKENS),
         )
-        np.testing.assert_array_equal(tokens[:, offset + 6 : offset + 8], encode(arrays["context_y"][:, i]))
+        np.testing.assert_array_equal(tokens[:, offset + INPUT_TOKENS + 2 : offset + OBSERVATION_TOKENS], encode(arrays["context_y"][:, i]))
     np.testing.assert_array_equal(
-        tokens[:, QUERY_OFFSET + 1 : PROMPT_LENGTH - 1], encode(arrays["query_x"]).reshape(8, 4)
+        tokens[:, QUERY_OFFSET + 1 : PROMPT_LENGTH - 1],
+        encode(arrays["query_x"]).reshape(8, INPUT_TOKENS),
     )
     np.testing.assert_array_equal(tokens[:, -2:], encode(arrays["query_y"]))
     replaced_target = build_sequences(
@@ -197,8 +202,8 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
         build_sequences(
             arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], SEQUENCE_LENGTH - 1
         )
-    with pytest.raises(ValueError, match="d=2"):
-        DatasetConfig(dimension=4).validate()
+    with pytest.raises(ValueError, match="d=1"):
+        DatasetConfig(dimension=2).validate()
 
 
 def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(monkeypatch):
@@ -207,7 +212,9 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
     monkeypatch.setattr(np.random, "default_rng", lambda: original_rng(2718))
     config = DatasetConfig(train_count=8, eval_count=4, sigma=0.5)
     baseline = generate_split(config, "eval")
-    np.testing.assert_array_equal(baseline["w"], original_rng(2718).normal(size=(4, 2)) / np.sqrt(2))
+    np.testing.assert_array_equal(
+        baseline["w"], original_rng(2718).normal(size=(4, DIMENSION)) / np.sqrt(DIMENSION)
+    )
     for sigma in (0.01, 0.1, 0.2):
         changed = generate_split(replace(config, sigma=sigma), "eval")
         for name in ("w", "context_x", "query_x", "query_signal", "ids"):
@@ -220,14 +227,14 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
         )
         assert not np.array_equal(changed["tokens"][:, -2:], baseline["tokens"][:, -2:])
 
-    context_x = np.tile(np.eye(2), (1, 8, 1))
-    weights = np.array([0.2, -0.3])
+    context_x = np.ones((1, 8, 1))
+    weights = np.array([0.2])
     context_y = context_x @ weights
-    query_x = np.ones((1, 2))
+    query_x = np.ones((1, 1))
     for sigma in (0.5, 0.1, 0.01):
         mean, variance = bayesian_predictive(context_x, context_y, query_x, sigma)
-        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2 / 4)])
-        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (4 + sigma**2)])
+        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2 / 8)])
+        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (8 + sigma**2)])
     low_noise_config = replace(config, sigma=0.01)
     lower = reference_distributions(baseline, low_noise_config)
     original = reference_distributions(baseline, config)
@@ -331,7 +338,7 @@ def test_exact_estimator_boundaries_and_sampling():
 
 
 def test_reference_normalization_and_analytic_cases(arrays):
-    mean, variance = bayesian_predictive(np.zeros((2, 16, 2)), np.zeros((2, 16)), np.ones((2, 2)), 0.5)
+    mean, variance = bayesian_predictive(np.zeros((2, 16, 1)), np.zeros((2, 16)), np.ones((2, 1)), 0.5)
     np.testing.assert_allclose(mean, 0)
     np.testing.assert_allclose(variance, 1.25)
     gaussian = gaussian_bin_log_probs(np.array([-100.0, 0.0, 100.0]), np.array([0.0001, 0.0001, 0.0001]))

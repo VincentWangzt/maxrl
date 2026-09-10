@@ -11,8 +11,8 @@ The current launchers prepare **10,000,000 frozen training examples** and
 **10,240,000 presentations**, or **1.024 pool passes**: every training example
 is seen once, followed by 240,000 examples from a fresh shuffle of the same pool.
 
-Each example independently draws `w ~ N(0,I/2)`, 64 context inputs and one
-query from `N(0,I_2)`. Outputs are `y = w·x + epsilon`, with independent context
+Each example independently draws `w ~ N(0,I)`, 64 context inputs and one
+query from `N(0,I_1)`. Outputs are `y = w·x + epsilon`, with independent context
 and query noises sharing **sigma=0.001**. The prior scales with dimension to keep
 the unconditional signal variance at one. Noise is added to outputs, not inputs.
 Each prompt uses one common latent coefficient vector; different prompts have
@@ -48,16 +48,17 @@ and `[BOS]`, with IDs 0–19. The final query reuses the observation markers:
 [X] query_x [Y] query_y
 ```
 
-Each `x` is two scalars (four digit tokens); each `y` is two digit tokens.
-The prompt is **519 tokens**, ending with `[Y]`; its answer is two more tokens,
-for **521 total**. The hidden `w`, unrounded arrays and noise values are never
+Each `x` is one scalar (two digit tokens); each `y` is two digit tokens.
+The prompt is **389 tokens**, ending with `[Y]`; its answer is two more tokens,
+for **391 total**. The hidden `w`, unrounded arrays and noise values are never
 included in the prompt. The vocabulary is saved as `codec.json`; there is no
 text tokenizer or pretrained embedding.
 
 Dataset **schema 4** records and validates the scalar range and prompt layout,
-and rejects older pools explicitly. The preceding d=2, n=16, sigma=0.01 run
-requires code revision `e973a39`; the d=4, [-5,5], sigma=0.1 run requires
-`f2f6c2a`. Earlier 22-token experiments use revision `1872344`. Historical
+and rejects incompatible pools explicitly. The preceding d=2, n=64,
+sigma=0.001 run requires code revision `825fcf6`; the d=2, n=16, sigma=0.01
+run requires `e973a39`; the d=4, [-5,5], sigma=0.1 run requires `f2f6c2a`.
+Earlier 22-token experiments use revision `1872344`. Historical
 datasets and checkpoints remain unchanged.
 
 ## Model and optimization
@@ -85,8 +86,8 @@ Matrices decay; biases and RMSNorm scales do not.
 Every parameter group is recorded. CUDA uses BF16 autocast with FP32 master
 parameters/optimizer states, FP32 loss, and FP64 distribution statistics.
 
-Only the final two answer tokens receive loss. The logits at positions 518
-and 519 predict target positions 519 and 520 (zero-based), with both softmaxes
+Only the final two answer tokens receive loss. The logits at positions 388
+and 389 predict target positions 389 and 390 (zero-based), with both softmaxes
 restricted to digit IDs 0–15. Loss is the batch mean of summed two-token NLLs.
 Batch 128/microbatch 128 means one forward/backward pass per update.
 
@@ -185,7 +186,7 @@ measures dependence on the context while preserving each query/target.
 Bayesian and decoded-input ridge are separate baseline methods with the same
 evaluation keys. The continuous Bayesian reference sees extra precision; ridge
 uses quantized inputs and approximate Gaussian uncertainty. Both read sigma
-from the new pool's metadata. Their run names include `d2_n64_10m_xy_range3_sigma0p001`.
+from the new pool's metadata. Their run names include `d1_n64_10m_xy_range3_sigma0p001`.
 
 To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
 the complete training configuration unchanged. A checkpoint restores model,
@@ -195,12 +196,12 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
 
 ## Artifacts
 
-- Dataset: `noisy-regression/data/fixed_d2_n64_10m_xy_range3_sigma0p001/`, containing
+- Dataset: `noisy-regression/data/fixed_d1_n64_10m_xy_range3_sigma0p001/`, containing
   `train.npz`, `eval.npz`, `metadata.json` and `codec.json`. Archives are
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_4layer_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001/`,
+- Training: `noisy-regression/checkpoints/qwen2_4layer_d1_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

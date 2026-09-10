@@ -212,8 +212,8 @@ bash noisy-regression/evaluate_ridge.sh
 ```
 
 Each creates a separate run in `noisy-regression-sft` and logs **once at step 0**.
-Current run names are `bayesian_continuous_d2_n64_10m_xy_range3_sigma0p001` and
-`ridge_quantized_d2_n64_10m_xy_range3_sigma0p001`, using the new 10M-pool evaluation split.
+Current run names are `bayesian_continuous_d1_n64_10m_xy_range3_sigma0p001` and
+`ridge_quantized_d1_n64_10m_xy_range3_sigma0p001`, using the new 10M-pool evaluation split.
 Each records the same 14 evaluation/pass scores, entropy, and two timing fields:
 17 history keys total. No completions are sampled and no model is trained.
 The shared keys allow comparing methods in the same panel or run-summary table;
