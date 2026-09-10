@@ -31,22 +31,16 @@ CPU_THREADS=4
 LOG_INTERVAL=10
 USE_WANDB=true
 PROJECT_NAME="noisy-regression-sft"
-MODEL_CONFIG_JSON='{
-  "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": 4,
-  "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
-  "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
-  "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
-  "use_sliding_window": false, "sliding_window": null,
-  "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
-}'
+NUM_HIDDEN_LAYERS=4
 
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--max-grad-norm|--run-name|--output-dir)
+    --gpu-id|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--max-grad-norm|--run-name|--output-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
+        --num-hidden-layers) NUM_HIDDEN_LAYERS="$2" ;;
         --max-steps) MAX_STEPS="$2" ;;
         --learning-rate) LEARNING_RATE="$2" ;;
         --min-learning-rate) MIN_LEARNING_RATE="$2" ;;
@@ -61,12 +55,23 @@ while (( $# )); do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+[[ "${NUM_HIDDEN_LAYERS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "Number of hidden layers must be a positive integer." >&2; exit 2;
+}
+MODEL_CONFIG_JSON='{
+  "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
+  "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
+  "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
+  "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
+  "use_sliding_window": false, "sliding_window": null,
+  "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
+}'
 if [[ -z "${RUN_NAME}" ]]; then
   clip_label="clip${MAX_GRAD_NORM}"
   if [[ "${MAX_GRAD_NORM}" == none ]]; then
     clip_label=noclip
   fi
-  RUN_NAME="qwen2_1m_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
+  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_d2_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"

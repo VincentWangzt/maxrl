@@ -67,6 +67,9 @@ four query heads/two KV heads, MLP size 512, context capacity 1,024, RoPE theta
 1,000,000, RMSNorm epsilon 1e-6, gated SiLU, tied embeddings, full causal
 attention and no dropout/sliding window/EOS. The 20-token vocabulary and
 **987,776** trainable parameters are unchanged from the preceding run.
+Pass `--num-hidden-layers 8` to `sft.sh` for an eight-layer model with the
+same width and attention settings. Default run names include the layer count;
+the complete architecture is recorded in each run's manifest and W&B config.
 
 AdamW uses peak LR **1e-4**, betas `(0.9,0.95)`, epsilon `1e-8`, weight
 decay `0.01`, and no gradient clipping by default (`--max-grad-norm none`).
@@ -98,6 +101,8 @@ bash noisy-regression/prepare.sh
 bash noisy-regression/sft.sh
 # Fresh clipped run; use a unique name if the default output already exists:
 bash noisy-regression/sft.sh --gpu-id 0 --max-grad-norm 10.0 --run-name UNIQUE_CLIP10_RUN
+# Eight-layer, unclipped run matching the 80K-step constant-LR experiment:
+bash noisy-regression/sft.sh --gpu-id 2 --num-hidden-layers 8 --max-steps 80000 --learning-rate 1e-4 --min-learning-rate 0 --warmup-steps 1600 --learning-rate-schedule linear_warmup_constant --max-grad-norm none --run-name UNIQUE_8L_LR1E4_RUN
 # Optional final-checkpoint reevaluation:
 bash noisy-regression/evaluate.sh
 # CPU baselines on this same new evaluation pool:
@@ -195,7 +200,7 @@ A resumed invocation starts a new W&B run with `resume_from` recorded.
   uncompressed to avoid compression overhead at this scale. All underlying
   continuous arrays, tokens, IDs and prompt hashes are retained. Metadata
   records file/content SHA-256, clipping and the train/eval overlap audit.
-- Training: `noisy-regression/checkpoints/qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001/`,
+- Training: `noisy-regression/checkpoints/qwen2_4layer_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001/`,
   containing the manifest, dataset metadata, reference statistics, W&B run link,
   JSONL metrics, per-prompt evaluation archives, checkpoints, best pointer,
   final summary and plots/report generated after successful completion.

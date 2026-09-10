@@ -5,7 +5,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_xy_range3_sigma0p001"
-RUN_NAME="${1:-qwen2_1m_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001}"
+RUN_NAME="${1:-qwen2_4layer_d2_n64_10m_xy_range3_sft_80000_bs128_lr1e-4_minlr1e-5_warmup1600_noclip_sigma0p001}"
 [[ $# -le 1 ]] || { echo "Usage: bash noisy-regression/evaluate.sh [RUN_NAME]" >&2; exit 2; }
 CHECKPOINT="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/checkpoint-80000"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/reevaluation-final"
