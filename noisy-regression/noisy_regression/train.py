@@ -117,8 +117,16 @@ def save_checkpoint(path, model, optimizer, scheduler, order, step, config, meta
 
 def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
     path = Path(path)
-    if json.loads((path / "training_config.json").read_text()) != asdict(config):
-        raise ValueError("Resume requires the same complete training configuration")
+    checkpoint_config = json.loads((path / "training_config.json").read_text())
+    requested_config = asdict(config)
+    changed_fields = {
+        name
+        for name in checkpoint_config.keys() | requested_config.keys()
+        if checkpoint_config.get(name) != requested_config.get(name)
+    }
+    extending_max_steps = changed_fields == {"max_steps"} and config.max_steps > checkpoint_config["max_steps"]
+    if changed_fields and not extending_max_steps:
+        raise ValueError("Resume requires the same training configuration; only max_steps may be increased")
     if json.loads((path / "dataset_metadata.json").read_text()) != metadata:
         raise ValueError("Resume dataset fingerprint/configuration mismatch")
     saved_model_config = json.loads((path / "config.json").read_text())
@@ -131,11 +139,13 @@ def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
     # state includes Python and NumPy objects, not just tensors.
     state = torch.load(path / "trainer_state.pt", map_location="cpu", weights_only=False)
     optimizer.load_state_dict(state["optimizer"])
-    scheduler.load_state_dict(state["scheduler"])
+    if not extending_max_steps:
+        scheduler.load_state_dict(state["scheduler"])
     order.load_state_dict(state["order"])
     restore_rng(state["rng"])
     if order.presentations != state["step"] * config.batch_size:
         raise ValueError("Checkpoint example-presentation counter mismatch")
+    state["checkpoint_training_config"] = checkpoint_config
     return state
 
 
@@ -203,11 +213,35 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     order = FrozenOrder(len(splits["train"]["tokens"]))
     step, previous_elapsed = 0, 0.0
     best = {"answer_nll": None, "step": None, "checkpoint": None}
+    resume_schedule = None
     if resume is not None:
         state = load_checkpoint(resume, model, optimizer, scheduler, order, config, metadata)
         step, previous_elapsed, best = state["step"], state["elapsed_seconds"], state["best"]
         if step >= config.max_steps:
             raise ValueError("Checkpoint has already finished the requested optimizer steps")
+        checkpoint_max_steps = state["checkpoint_training_config"]["max_steps"]
+        retargeted = checkpoint_max_steps != config.max_steps
+        if retargeted:
+            scheduler = make_scheduler(
+                optimizer,
+                config.warmup_steps,
+                config.max_steps,
+                config.min_learning_rate,
+                config.learning_rate_schedule,
+                completed_steps=step,
+            )
+        resume_schedule = {
+            "checkpoint_max_steps": checkpoint_max_steps,
+            "target_max_steps": config.max_steps,
+            "completed_steps": step,
+            "retargeted": retargeted,
+            "policy": (
+                "The new horizon applies from the first resumed update; completed updates retain their original "
+                "learning-rate history."
+                if retargeted
+                else "The checkpoint scheduler state is restored exactly."
+            ),
+        }
     versions = {
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -247,6 +281,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "data_path": str(Path(data_path).resolve()),
         "resume_from": str(Path(resume).resolve()) if resume else None,
+        "resume_schedule": resume_schedule,
         "deterministic_algorithms": True,
         "randomness": "Fresh initialization and training shuffle; no fixed seeds",
         "likelihood_units": "nats per complete two-token answer",
@@ -276,6 +311,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                         "versions",
                         "git_commit",
                         "resume_from",
+                        "resume_schedule",
                     )
                 },
             },

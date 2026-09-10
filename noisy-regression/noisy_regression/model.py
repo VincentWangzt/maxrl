@@ -137,10 +137,25 @@ def make_optimizer(model, learning_rate, beta1, beta2, weight_decay, epsilon):
     }
 
 
-def make_scheduler(optimizer, warmup_steps, max_steps, min_learning_rate, schedule):
+def make_scheduler(
+    optimizer,
+    warmup_steps,
+    max_steps,
+    min_learning_rate,
+    schedule,
+    *,
+    completed_steps=0,
+):
     if not 0 <= warmup_steps < max_steps:
         raise ValueError("Require 0 <= warmup_steps < max_steps")
-    base_learning_rates = {group["lr"] for group in optimizer.param_groups}
+    if not isinstance(completed_steps, int) or not 0 <= completed_steps < max_steps:
+        raise ValueError("Require integer 0 <= completed_steps < max_steps")
+    if completed_steps:
+        for group in optimizer.param_groups:
+            group.setdefault("initial_lr", group["lr"])
+    base_learning_rates = {
+        group["initial_lr"] if completed_steps else group["lr"] for group in optimizer.param_groups
+    }
     if len(base_learning_rates) != 1:
         raise ValueError("Scheduler requires one shared base learning rate")
     (base_learning_rate,) = base_learning_rates
@@ -167,6 +182,7 @@ def make_scheduler(optimizer, warmup_steps, max_steps, min_learning_rate, schedu
         cosine = 0.5 * (1.0 + math.cos(math.pi * min(decay_progress, 1.0)))
         return minimum_ratio + (1.0 - minimum_ratio) * cosine
 
-    # LambdaLR evaluates completed=0 at construction, so the optimizer's LR
-    # already matches update 1 before the first optimizer.step().
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
+    # LambdaLR advances once at construction. For a fresh scheduler this sets
+    # the LR for update 1; for an extended run it sets the LR for the first
+    # update after completed_steps under the retargeted horizon.
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier, last_epoch=completed_steps - 1)

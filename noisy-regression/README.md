@@ -186,10 +186,15 @@ evaluation keys. The continuous Bayesian reference sees extra precision; ridge
 uses quantized inputs and approximate Gaussian uncertainty. Both read sigma
 from the new pool's metadata. Their run names include `d2_n64_1m_xy_range3_sigma0p001`.
 
-To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`, keeping
-the complete training configuration unchanged. A checkpoint restores model,
-optimizer, scheduler, shuffle/cursor, and Python/NumPy/Torch/CUDA RNG state.
-The best pointer can reference an earlier run directory.
+To resume, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`. All
+training settings must match the checkpoint, except that `max_steps` may be
+increased to extend a run. An extension retargets the learning-rate schedule to
+the new horizon starting with the first resumed update; completed updates keep
+their original learning-rate history, so a decayed run can have an intentional
+LR discontinuity at the boundary. The manifest records both horizons and this
+policy. A checkpoint restores model, optimizer, shuffle/cursor, and
+Python/NumPy/Torch/CUDA RNG state; it restores the scheduler exactly when the
+horizon is unchanged. The best pointer can reference an earlier run directory.
 A resumed invocation starts a new W&B run with `resume_from` recorded.
 
 ## Artifacts

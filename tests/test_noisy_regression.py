@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -473,6 +473,30 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
         torch.testing.assert_close(value, expected_weights[name], atol=0, rtol=0)
     with pytest.raises(ValueError, match="configuration"):
         load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, learning_rate=1e-3), {})
+    extended = replace(config, max_steps=4)
+    extended_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, extended, {})
+    assert extended_state["checkpoint_training_config"] == asdict(config)
+    with pytest.raises(ValueError, match="only max_steps may be increased"):
+        load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, max_steps=2), {})
+
+
+def test_extended_cosine_scheduler_retargets_the_next_update():
+    parameter = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.SGD([parameter], lr=1e-4)
+    optimizer.param_groups[0]["initial_lr"] = 1e-4
+    optimizer.param_groups[0]["lr"] = 1e-5
+    scheduler = make_scheduler(
+        optimizer,
+        warmup_steps=200,
+        max_steps=80_000,
+        min_learning_rate=1e-5,
+        schedule="linear_warmup_cosine_decay",
+        completed_steps=10_000,
+    )
+    decay_progress = (10_001 - 200) / (80_000 - 200)
+    expected = 1e-5 + (1e-4 - 1e-5) * 0.5 * (1 + math.cos(math.pi * decay_progress))
+    assert scheduler.last_epoch == 10_000
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("max_grad_norm", [None, 10.0, 100.0])
