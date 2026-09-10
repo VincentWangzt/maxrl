@@ -32,8 +32,8 @@ class TrainConfig:
     max_steps: int = 80_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
-    min_learning_rate: float = 1e-5
-    learning_rate_schedule: str = "linear_warmup_cosine_decay"
+    min_learning_rate: float = 0.0
+    learning_rate_schedule: str = "linear_warmup_constant"
     beta1: float = 0.9
     beta2: float = 0.95
     weight_decay: float = 0.01
@@ -143,16 +143,18 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     model.train()
     optimizer.zero_grad(set_to_none=True)
     indices = order.take(config.batch_size)
-    loss_sum = torch.zeros((), device=device)
+    answer_nll_sum = torch.zeros((), device=device)
+    eos_nll_sum = torch.zeros((), device=device)
     for start in range(0, config.batch_size, config.micro_batch_size):
         tokens = torch.tensor(
             train_tokens[indices[start : start + config.micro_batch_size]].astype(np.int64), device=device
         )
         with precision_context(device, config.precision):
-            nll = teacher_forced_nll(model, tokens).sum(1)
-            loss = nll.sum() / config.batch_size
+            token_nll = teacher_forced_nll(model, tokens)
+            loss = token_nll.sum() / config.batch_size
         loss.backward()
-        loss_sum += nll.detach().sum()
+        answer_nll_sum += token_nll[:, :2].detach().sum()
+        eos_nll_sum += token_nll[:, 2].detach().sum()
     if config.max_grad_norm is None:
         gradient_norm = torch.nn.utils.get_total_norm(
             (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
@@ -169,7 +171,9 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     scheduler.step()
     return (
         {
-            "answer_nll": loss_sum.item() / config.batch_size,
+            "answer_nll": answer_nll_sum.item() / config.batch_size,
+            "eos_nll": eos_nll_sum.item() / config.batch_size,
+            "completion_nll": (answer_nll_sum + eos_nll_sum).item() / config.batch_size,
             "gradient_norm": float(gradient_norm),
             "learning_rate": lr,
         },
@@ -232,6 +236,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
+        "training_objective": "two constrained digit NLLs plus full-vocabulary EOS NLL",
         "learning_rate_schedule": (
             f"{config.learning_rate_schedule}; linear warmup from {config.min_learning_rate:g} to "
             f"{config.learning_rate:g}, then "
@@ -249,7 +254,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "resume_from": str(Path(resume).resolve()) if resume else None,
         "deterministic_algorithms": True,
         "randomness": "Fresh initialization and training shuffle; no fixed seeds",
-        "likelihood_units": "nats per complete two-token answer",
+        "likelihood_units": "answer metrics are nats per two-digit value; training additionally supervises EOS",
         "evaluation_policy": "Full held-out pool plus the just-optimized training batch at evaluation steps",
     }
     write_json(output_path / "manifest.json", manifest)

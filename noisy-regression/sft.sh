@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults reproduce the current 80K-step n=64 experiment; the sweep passes explicit overrides.
+# Defaults reproduce the current 80K-step EOO-delimited, constant-LR experiment.
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d1_n64_10m_xy_range3_sigma0p001"
+DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_sep_eoo_query_eos_range3_sigma0p001"
 RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
-GPU_ID=0
+GPU_ID=1
 ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
@@ -18,8 +18,8 @@ MICRO_BATCH_SIZE=128
 MAX_STEPS=80000
 EVAL_INTERVAL=500
 LEARNING_RATE=1e-4
-MIN_LEARNING_RATE=1e-5
-LEARNING_RATE_SCHEDULE="linear_warmup_cosine_decay"
+MIN_LEARNING_RATE=0
+LEARNING_RATE_SCHEDULE="linear_warmup_constant"
 BETA1=0.9
 BETA2=0.95
 WEIGHT_DECAY=0.01
@@ -59,19 +59,23 @@ done
   echo "Number of hidden layers must be a positive integer." >&2; exit 2;
 }
 MODEL_CONFIG_JSON='{
-  "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
+  "vocab_size": 24, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
   "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
   "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
   "use_sliding_window": false, "sliding_window": null,
-  "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
+  "bos_token_id": 22, "pad_token_id": 21, "eos_token_id": 23
 }'
 if [[ -z "${RUN_NAME}" ]]; then
   clip_label="clip${MAX_GRAD_NORM}"
   if [[ "${MAX_GRAD_NORM}" == none ]]; then
     clip_label=noclip
   fi
-  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_d1_n64_10m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_minlr${MIN_LEARNING_RATE}_warmup${WARMUP_STEPS}_${clip_label}_sigma0p001"
+  schedule_label=cosine
+  if [[ "${LEARNING_RATE_SCHEDULE}" == linear_warmup_constant ]]; then
+    schedule_label=constant
+  fi
+  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_1m_d2_n64_10m_sep_eoo_query_eos_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_warmup${WARMUP_STEPS}_${schedule_label}_${clip_label}_sigma0p001"
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"

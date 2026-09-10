@@ -31,6 +31,9 @@ of 256 random completions. Neither is a single sampled answer or the most likely
 answer. Signal MSE squares the difference between the mean prediction and `s`,
 then averages across examples. It does not average individual samples' squared
 errors; that would additionally penalize the predictive distribution's spread.
+Training also predicts the deterministic `[EOS]` token after the two answer
+digits. That termination term contributes to the optimization objective but is
+kept separate from numerical answer NLL, pass@k, and predictive-mean metrics.
 
 For a predictor independent of fresh query noise,
 `E[(prediction - y)^2] = E[(prediction - s)^2] + sigma^2`.
@@ -93,7 +96,7 @@ The query-only predictor is centered at zero; its spread depends on the query
 norm and noise level. Uniform and both query-only variants therefore have the
 same mean prediction and signal MSE, even though their NLL/pass@k differ.
 
-Bayesian regression infers the coefficients from the 16 context examples under
+Bayesian regression infers the coefficients from the 64 context examples under
 the known Gaussian prior. The continuous version has extra input precision.
 The ridge version substitutes decoded grid centers into that Gaussian model;
 it does not integrate over every possible continuous value represented by the

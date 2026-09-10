@@ -5,10 +5,10 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d1_n64_10m_xy_range3_sigma0p001"
+OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_sep_eoo_query_eos_range3_sigma0p001"
 TRAIN_COUNT=10000000
 EVAL_COUNT=1024
-DIMENSION=1
+DIMENSION=2
 OBSERVATIONS=64
 SIGMA=0.001 # Same standard deviation for independent context and query noise.
 CAPACITY=1024

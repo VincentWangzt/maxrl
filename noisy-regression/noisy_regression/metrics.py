@@ -3,7 +3,7 @@
 import numpy as np
 from scipy.stats import binom
 
-from noisy_regression.codec import CENTERS, decode, quantize
+from noisy_regression.codec import CENTERS, PROMPT_LENGTH, decode, quantize
 
 KS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
@@ -92,7 +92,7 @@ def distribution_summary(log_probs, arrays):
     normalization_error = float(np.abs(probs.sum(1) - 1).max())
     if normalization_error > 1e-6:
         raise ValueError(f"Distribution normalization error {normalization_error}")
-    targets = arrays["tokens"][:, -2:].astype(np.int64)
+    targets = arrays["tokens"][:, PROMPT_LENGTH : PROMPT_LENGTH + 2].astype(np.int64)
     target_indices = 16 * targets[:, 0] + targets[:, 1]
     rows = np.arange(len(targets))
     target_ll = log_probs[rows, target_indices]
