@@ -125,6 +125,15 @@ distinct training examples (0.128 passes). Initialization and training order
 remain independently random per run, so this single-run sweep does not isolate
 seed variability.
 
+Use `--gpu-id ID` and `--learning-rates "RATE ..."` to choose the device and
+ordered rate list. For example, launch these in separate detached server
+sessions to run two queues concurrently, one training process per GPU:
+
+```bash
+bash noisy-regression/sweep_sft_lr.sh UNIQUE_SWEEP_gpu8 --gpu-id 8 --learning-rates "5e-4 1e-4 2e-5" --max-grad-norm none
+bash noisy-regression/sweep_sft_lr.sh UNIQUE_SWEEP_gpu9 --gpu-id 9 --learning-rates "2e-4 5e-5 1e-5" --max-grad-norm none
+```
+
 Outputs are under `noisy-regression/checkpoints/UNIQUE_SWEEP_NAME/lrRATE/`,
 with per-run logs in `logs/`, configuration in `config.txt`, and append-only
 progress in `status.tsv`. All runs share the W&B group `UNIQUE_SWEEP_NAME`
@@ -133,7 +142,7 @@ metrics, plots and report. A failed run stops the queue and records its exit
 code. The sweep reserves a GPU-specific lock and checks for compute processes
 before each run. Use a detached server session to survive SSH disconnects.
 
-Pass `--allow-gpu-sharing` to explicitly permit sharing GPU 3 with existing
+Pass `--allow-gpu-sharing` to explicitly permit sharing the selected GPU with existing
 compute processes; both workloads then compete for GPU resources. This flag is
 also available on `sft.sh`. The sweep lock only excludes other copies of this
 sweep launcher; it does not reserve the device against unrelated jobs.

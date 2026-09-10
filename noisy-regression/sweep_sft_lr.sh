@@ -11,7 +11,7 @@ LEARNING_RATES=(1e-6 2e-6 5e-6 1e-5 2e-5 5e-5 1e-4 2e-4 5e-4)
 ALLOW_GPU_SHARING=false
 RESUME=false
 if [[ $# -lt 1 || ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-  echo "Usage: bash noisy-regression/sweep_sft_lr.sh SWEEP_NAME [--max-grad-norm none|VALUE] [--resume] [--allow-gpu-sharing]" >&2
+  echo 'Usage: bash noisy-regression/sweep_sft_lr.sh SWEEP_NAME [--gpu-id ID] [--learning-rates "RATE ..."] [--max-grad-norm none|VALUE] [--resume] [--allow-gpu-sharing]' >&2
   exit 2
 fi
 SWEEP_NAME="$1"
@@ -20,14 +20,32 @@ while (( $# )); do
   case "$1" in
     --resume) RESUME=true ;;
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true ;;
-    --max-grad-norm)
+    --gpu-id|--learning-rates|--max-grad-norm)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
-      MAX_GRAD_NORM="$2"
+      case "$1" in
+        --gpu-id) GPU_ID="$2" ;;
+        --learning-rates) read -r -a LEARNING_RATES <<< "$2" ;;
+        --max-grad-norm) MAX_GRAD_NORM="$2" ;;
+      esac
       shift
       ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
+done
+[[ "${GPU_ID}" =~ ^[0-9]+$ ]] || { echo "GPU ID must be a nonnegative integer." >&2; exit 2; }
+(( ${#LEARNING_RATES[@]} > 0 )) || { echo "Specify at least one learning rate." >&2; exit 2; }
+declare -A seen_rates=()
+for learning_rate in "${LEARNING_RATES[@]}"; do
+  mantissa="${learning_rate%%[eE]*}"
+  [[ "${learning_rate}" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ &&
+     "${mantissa}" == *[1-9]* ]] || {
+    echo "Invalid positive learning rate: ${learning_rate}" >&2; exit 2;
+  }
+  [[ -z "${seen_rates[${learning_rate}]:-}" ]] || {
+    echo "Duplicate learning rate: ${learning_rate}" >&2; exit 2;
+  }
+  seen_rates["${learning_rate}"]=1
 done
 SWEEP_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${SWEEP_NAME}"
 mkdir -p "${REPO_ROOT}/noisy-regression/checkpoints"
