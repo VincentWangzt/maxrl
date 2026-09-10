@@ -5,8 +5,8 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_10m_sep_eoo_query_eos_range3_sigma0p001"
-TRAIN_COUNT=10000000
+OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_1m_xy_range3_sigma0p001"
+TRAIN_COUNT=1000000
 EVAL_COUNT=1024
 DIMENSION=2
 OBSERVATIONS=64

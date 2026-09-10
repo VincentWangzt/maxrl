@@ -8,19 +8,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, Qwen2Config
 from transformers.cache_utils import DynamicCache
 
-from noisy_regression.codec import (
-    BOS,
-    DIGITS,
-    EOS,
-    PAD,
-    PROMPT_LENGTH,
-    QUERY,
-    QUERY_OFFSET,
-    SEQUENCE_LENGTH,
-    VOCAB,
-    X,
-    Y,
-)
+from noisy_regression.codec import BOS, DIGITS, PAD, PROMPT_LENGTH, QUERY_OFFSET, SEQUENCE_LENGTH, VOCAB, X, Y
 
 
 @dataclass(frozen=True)
@@ -41,7 +29,7 @@ class ModelConfig:
     sliding_window: None = None
     bos_token_id: int = BOS
     pad_token_id: int = PAD
-    eos_token_id: int = EOS
+    eos_token_id: None = None
 
 
 def create_model(config):
@@ -54,35 +42,23 @@ def answer_labels(tokens):
     if (
         tokens.ndim != 2
         or tokens.shape[1] != SEQUENCE_LENGTH
-        or not torch.all(tokens[:, QUERY_OFFSET] == QUERY)
-        or not torch.all(tokens[:, QUERY_OFFSET + 1] == X)
+        or not torch.all(tokens[:, QUERY_OFFSET] == X)
         or not torch.all(tokens[:, PROMPT_LENGTH - 1] == Y)
-        or not torch.all(tokens[:, -1] == EOS)
     ):
-        raise ValueError(
-            f"Expected complete {SEQUENCE_LENGTH}-token examples ending in "
-            "[QUERY] [X] a b [SEP] c d [Y] e f [EOS]"
-        )
-    if torch.any((tokens[:, PROMPT_LENGTH : PROMPT_LENGTH + 2] < 0) | (tokens[:, PROMPT_LENGTH : PROMPT_LENGTH + 2] >= DIGITS)):
+        raise ValueError(f"Expected complete {SEQUENCE_LENGTH}-token examples ending in [X] query [Y] a b")
+    if torch.any((tokens[:, -2:] < 0) | (tokens[:, -2:] >= DIGITS)):
         raise ValueError("Targets must be digit pairs")
     labels = torch.full_like(tokens, -100)
-    labels[:, PROMPT_LENGTH:] = tokens[:, PROMPT_LENGTH:]
+    labels[:, -2:] = tokens[:, -2:]
     return labels
 
 
 def answer_nll_from_logits(logits, tokens):
     labels = answer_labels(tokens)
-    # Do not pass labels into HF, which would shift internally and normalize
-    # digit predictions over all vocabulary entries. The two digit shifts use
-    # a constrained 16-way CE; termination uses the full vocabulary.
+    # Do not pass labels into HF (which would shift internally and normalize
+    # over all vocabulary entries). Here the two shifts and 16-way CE are explicit.
     selected = logits[:, PROMPT_LENGTH - 1 : PROMPT_LENGTH + 1, :DIGITS].float()
-    digit_nll = F.cross_entropy(
-        selected.reshape(-1, DIGITS),
-        labels[:, PROMPT_LENGTH : PROMPT_LENGTH + 2].reshape(-1),
-        reduction="none",
-    ).reshape(-1, 2)
-    eos_nll = F.cross_entropy(logits[:, PROMPT_LENGTH + 1].float(), labels[:, -1], reduction="none")
-    return torch.cat((digit_nll, eos_nll[:, None]), dim=1)
+    return F.cross_entropy(selected.reshape(-1, DIGITS), labels[:, -2:].reshape(-1), reduction="none").reshape(-1, 2)
 
 
 def teacher_forced_nll(model, tokens):
@@ -101,11 +77,10 @@ def conditional_log_probs(model, prompts):
     if (
         prompts.ndim != 2
         or prompts.shape[1] != PROMPT_LENGTH
-        or not torch.all(prompts[:, QUERY_OFFSET] == QUERY)
-        or not torch.all(prompts[:, QUERY_OFFSET + 1] == X)
+        or not torch.all(prompts[:, QUERY_OFFSET] == X)
         or not torch.all(prompts[:, -1] == Y)
     ):
-        raise ValueError(f"Expected {PROMPT_LENGTH}-token prompts ending in [QUERY] [X] a b [SEP] c d [Y]")
+        raise ValueError(f"Expected {PROMPT_LENGTH}-token prompts ending in [X] query [Y]")
     if prompts.shape[1] + 2 > model.config.max_position_embeddings:
         raise ValueError("Overlength generation; truncation is forbidden")
     batch = len(prompts)

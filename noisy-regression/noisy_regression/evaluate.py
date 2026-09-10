@@ -51,13 +51,9 @@ def likelihood(model, tokens, batch_size, device, precision):
         with precision_context(device, precision):
             losses.append(teacher_forced_nll(model, batch).double().cpu().numpy())
     losses = np.concatenate(losses)
-    answer_nll = losses[:, :2].sum(1)
-    eos_nll = losses[:, 2]
     return {
-        "answer_nll": mean_se(answer_nll),
-        "answer_log_likelihood": mean_se(-answer_nll),
-        "eos_nll": mean_se(eos_nll),
-        "completion_nll": mean_se(answer_nll + eos_nll),
+        "answer_nll": mean_se(losses.sum(1)),
+        "answer_log_likelihood": mean_se(-losses.sum(1)),
     }
 
 

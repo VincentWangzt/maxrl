@@ -15,17 +15,10 @@ from noisy_regression.codec import (
     CENTERS,
     CONTEXT_SLICE,
     DELTA,
-    DIGITS,
-    DIMENSION,
-    EOO,
-    EOS,
     MIDPOINTS,
-    OBSERVATION_TOKENS,
     OBSERVATIONS,
     PROMPT_LENGTH,
-    QUERY,
     QUERY_OFFSET,
-    SEP,
     SEQUENCE_LENGTH,
     VOCAB,
     X,
@@ -109,6 +102,7 @@ def test_codec_endpoints_midpoints_roundtrips_and_finite():
 
 
 def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
+    assert DatasetConfig().train_count == 1_000_000
     config = DatasetConfig(train_count=8, eval_count=4)
     train_arrays, eval_arrays = generate_split(config, "train"), generate_split(config, "eval")
     assert array_hash(train_arrays) != array_hash(generate_split(config, "train"))
@@ -129,11 +123,11 @@ def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     assert array_hash(pools["train"]) != array_hash(train_arrays)
     assert not pools["train"]["query_y"].flags.writeable
     assert set(metadata["splits"]) == {"train", "eval"}
-    assert metadata["schema_version"] == 5
+    assert metadata["schema_version"] == 4
     assert metadata["codec"]["range"] == [-3, 3]
     assert metadata["codec"]["dimension"] == 2
     assert metadata["codec"]["observations"] == 64
-    assert metadata["codec"]["prompt_length"] == 649
+    assert metadata["codec"]["prompt_length"] == 519
     assert metadata["config"]["sigma"] == 0.001
     assert not any("seed" in name for name in metadata["config"])
     assert not set(pools["train"]["prompt_hashes"]) & set(pools["eval"]["prompt_hashes"])
@@ -173,39 +167,23 @@ def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):
 
 def test_prompt_layout_and_no_latent_leakage(arrays):
     tokens = arrays["tokens"]
-    assert DIMENSION == 2 and OBSERVATIONS == 64 and PROMPT_LENGTH == 649 and SEQUENCE_LENGTH == 652
+    assert OBSERVATIONS == 64 and PROMPT_LENGTH == 519 and SEQUENCE_LENGTH == 521
     assert tokens.shape == (8, SEQUENCE_LENGTH)
-    assert (tokens[:, 0] == BOS).all() and (tokens[:, QUERY_OFFSET] == QUERY).all()
-    assert (tokens[:, QUERY_OFFSET + 1] == X).all()
+    assert (tokens[:, 0] == BOS).all() and (tokens[:, QUERY_OFFSET] == X).all()
     assert (tokens[:, PROMPT_LENGTH - 1] == Y).all()
-    assert (tokens[:, -1] == EOS).all()
-    assert len(VOCAB) == 24 and {"[SEP]", "[EOO]", "[QUERY]", "[EOS]"} <= set(VOCAB)
+    assert len(VOCAB) == 20 and "[QUERY]" not in VOCAB and "[ANSWER]" not in VOCAB
     assert tokens.max() < len(VOCAB)
     for i in range(OBSERVATIONS):
-        offset = 1 + OBSERVATION_TOKENS * i
-        assert (tokens[:, offset] == X).all()
-        assert (tokens[:, offset + 3] == SEP).all()
-        assert (tokens[:, offset + 6] == Y).all()
-        assert (tokens[:, offset + 9] == EOO).all()
+        offset = 1 + 8 * i
+        assert (tokens[:, offset] == X).all() and (tokens[:, offset + 5] == Y).all()
         np.testing.assert_array_equal(
-            tokens[:, offset + 1 : offset + 3],
-            encode(arrays["context_x"][:, i, 0]),
+            tokens[:, offset + 1 : offset + 5], encode(arrays["context_x"][:, i]).reshape(8, 4)
         )
-        np.testing.assert_array_equal(
-            tokens[:, offset + 4 : offset + 6],
-            encode(arrays["context_x"][:, i, 1]),
-        )
-        np.testing.assert_array_equal(tokens[:, offset + 7 : offset + 9], encode(arrays["context_y"][:, i]))
+        np.testing.assert_array_equal(tokens[:, offset + 6 : offset + 8], encode(arrays["context_y"][:, i]))
     np.testing.assert_array_equal(
-        tokens[:, QUERY_OFFSET + 2 : QUERY_OFFSET + 4],
-        encode(arrays["query_x"][:, 0]),
+        tokens[:, QUERY_OFFSET + 1 : PROMPT_LENGTH - 1], encode(arrays["query_x"]).reshape(8, 4)
     )
-    np.testing.assert_array_equal(
-        tokens[:, QUERY_OFFSET + 5 : QUERY_OFFSET + 7],
-        encode(arrays["query_x"][:, 1]),
-    )
-    assert (tokens[:, QUERY_OFFSET + 4] == SEP).all()
-    np.testing.assert_array_equal(tokens[:, PROMPT_LENGTH : PROMPT_LENGTH + 2], encode(arrays["query_y"]))
+    np.testing.assert_array_equal(tokens[:, -2:], encode(arrays["query_y"]))
     replaced_target = build_sequences(
         arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"] + 1
     )
@@ -221,7 +199,7 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
             arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], SEQUENCE_LENGTH - 1
         )
     with pytest.raises(ValueError, match="d=2"):
-        DatasetConfig(dimension=1).validate()
+        DatasetConfig(dimension=4).validate()
 
 
 def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(monkeypatch):
@@ -230,9 +208,7 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
     monkeypatch.setattr(np.random, "default_rng", lambda: original_rng(2718))
     config = DatasetConfig(train_count=8, eval_count=4, sigma=0.5)
     baseline = generate_split(config, "eval")
-    np.testing.assert_array_equal(
-        baseline["w"], original_rng(2718).normal(size=(4, DIMENSION)) / np.sqrt(DIMENSION)
-    )
+    np.testing.assert_array_equal(baseline["w"], original_rng(2718).normal(size=(4, 2)) / np.sqrt(2))
     for sigma in (0.01, 0.1, 0.2):
         changed = generate_split(replace(config, sigma=sigma), "eval")
         for name in ("w", "context_x", "query_x", "query_signal", "ids"):
@@ -243,19 +219,16 @@ def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(
         np.testing.assert_array_equal(
             changed["tokens"][:, QUERY_OFFSET:PROMPT_LENGTH], baseline["tokens"][:, QUERY_OFFSET:PROMPT_LENGTH]
         )
-        assert not np.array_equal(
-            changed["tokens"][:, PROMPT_LENGTH : PROMPT_LENGTH + 2],
-            baseline["tokens"][:, PROMPT_LENGTH : PROMPT_LENGTH + 2],
-        )
+        assert not np.array_equal(changed["tokens"][:, -2:], baseline["tokens"][:, -2:])
 
-    context_x = np.ones((1, 8, 1))
-    weights = np.array([0.2])
+    context_x = np.tile(np.eye(2), (1, 8, 1))
+    weights = np.array([0.2, -0.3])
     context_y = context_x @ weights
-    query_x = np.ones((1, 1))
+    query_x = np.ones((1, 2))
     for sigma in (0.5, 0.1, 0.01):
         mean, variance = bayesian_predictive(context_x, context_y, query_x, sigma)
-        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2 / 8)])
-        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (8 + sigma**2)])
+        np.testing.assert_allclose(mean, [weights.sum() / (1 + sigma**2 / 4)])
+        np.testing.assert_allclose(variance, [sigma**2 + sigma**2 / (4 + sigma**2)])
     low_noise_config = replace(config, sigma=0.01)
     lower = reference_distributions(baseline, low_noise_config)
     original = reference_distributions(baseline, config)
@@ -285,31 +258,27 @@ def test_epoch_order_freezes_complete_examples(arrays):
 def test_answer_only_shift_and_restricted_loss(arrays):
     tokens = torch.tensor(arrays["tokens"].astype(np.int64))
     labels = answer_labels(tokens)
-    assert (labels[:, :PROMPT_LENGTH] == -100).all()
-    assert torch.equal(labels[:, PROMPT_LENGTH:], tokens[:, PROMPT_LENGTH:])
+    assert (labels[:, :-2] == -100).all() and torch.equal(labels[:, -2:], tokens[:, -2:])
     logits = torch.zeros(8, SEQUENCE_LENGTH, len(VOCAB), requires_grad=True)
     nll = answer_nll_from_logits(logits, tokens)
-    assert nll.shape == (8, 3)
-    torch.testing.assert_close(nll[:, :2].sum(1), torch.full((8,), math.log(256)))
-    torch.testing.assert_close(nll[:, 2], torch.full((8,), math.log(len(VOCAB))))
+    torch.testing.assert_close(nll.sum(1), torch.full((8,), math.log(256)))
     nll.sum(1).mean().backward()
     assert torch.count_nonzero(logits.grad[:, : PROMPT_LENGTH - 1]) == 0
-    assert torch.count_nonzero(logits.grad[:, PROMPT_LENGTH + 2 :]) == 0
-    assert torch.count_nonzero(logits.grad[:, PROMPT_LENGTH - 1 : PROMPT_LENGTH + 1, DIGITS:]) == 0
-    assert torch.count_nonzero(logits.grad[:, PROMPT_LENGTH + 1, DIGITS:]) > 0
+    assert torch.count_nonzero(logits.grad[:, PROMPT_LENGTH + 1 :]) == 0
+    assert torch.count_nonzero(logits.grad[:, :, 16:]) == 0
     altered = logits.detach().clone()
-    altered[:, PROMPT_LENGTH - 1 : PROMPT_LENGTH + 1, DIGITS:] = 1e6
+    altered[:, :, 16:] = 1e6
     altered[:, : PROMPT_LENGTH - 1] = -1e6
-    altered[:, PROMPT_LENGTH + 2 :] = 1e6
+    altered[:, PROMPT_LENGTH + 1 :] = 1e6
     torch.testing.assert_close(answer_nll_from_logits(altered, tokens), nll)
 
 
 def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     model = create_model(ModelConfig()).eval()
-    assert sum(p.numel() for p in model.parameters()) == 988288
+    assert sum(p.numel() for p in model.parameters()) == 987776
     assert model.get_input_embeddings().weight.data_ptr() == model.get_output_embeddings().weight.data_ptr()
     assert (
-        model.config.eos_token_id == EOS
+        model.config.eos_token_id is None
         and model.config.sliding_window is None
         and not model.config.use_sliding_window
     )
@@ -320,18 +289,11 @@ def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     first, second = conditional_log_probs(model, tokens[:, :PROMPT_LENGTH])
     joint = joint_log_probs(first, second)
     rows = torch.arange(len(tokens))
-    first_targets = tokens[:, PROMPT_LENGTH]
-    second_targets = tokens[:, PROMPT_LENGTH + 1]
-    torch.testing.assert_close(-first[rows, first_targets], nll[:, 0].double(), rtol=1e-5, atol=1e-5)
-    torch.testing.assert_close(
-        -second[rows, first_targets, second_targets], nll[:, 1].double(), rtol=1e-5, atol=1e-5
-    )
-    with torch.no_grad():
-        eos_nll = -torch.log_softmax(model(tokens, use_cache=False).logits[:, PROMPT_LENGTH + 1].float(), -1)[:, EOS]
-    torch.testing.assert_close(eos_nll, nll[:, 2], rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(-first[rows, tokens[:, -2]], nll[:, 0].double(), rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(-second[rows, tokens[:, -2], tokens[:, -1]], nll[:, 1].double(), rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(joint.exp().sum(-1), torch.ones(2, dtype=torch.float64), rtol=0, atol=1e-6)
     modified = tokens.clone()
-    modified[:, PROMPT_LENGTH + 1] = (modified[:, PROMPT_LENGTH + 1] + 1) % DIGITS
+    modified[:, -1] = (modified[:, -1] + 1) % 16
     with torch.no_grad():
         original_logits = model(tokens, use_cache=False).logits
         modified_logits = model(modified, use_cache=False).logits
@@ -370,7 +332,7 @@ def test_exact_estimator_boundaries_and_sampling():
 
 
 def test_reference_normalization_and_analytic_cases(arrays):
-    mean, variance = bayesian_predictive(np.zeros((2, 16, 1)), np.zeros((2, 16)), np.ones((2, 1)), 0.5)
+    mean, variance = bayesian_predictive(np.zeros((2, 16, 2)), np.zeros((2, 16)), np.ones((2, 2)), 0.5)
     np.testing.assert_allclose(mean, 0)
     np.testing.assert_allclose(variance, 1.25)
     gaussian = gaussian_bin_log_probs(np.array([-100.0, 0.0, 100.0]), np.array([0.0001, 0.0001, 0.0001]))
@@ -391,7 +353,7 @@ def test_clean_and_noisy_metrics_use_exact_distribution_and_distinct_targets(arr
     selected = {name: values[:2].copy() for name, values in arrays.items()}
     selected["query_signal"] = np.array([1.2, -6.0])
     selected["query_y"] = np.array([1.3, 6.0])
-    selected["tokens"][:, PROMPT_LENGTH : PROMPT_LENGTH + 2] = encode(selected["query_y"])
+    selected["tokens"][:, -2:] = encode(selected["query_y"])
     clean_indices = quantize(selected["query_signal"])
     noisy_indices = quantize(selected["query_y"])
     clean_p = np.array([0.2, 0.6])
@@ -520,10 +482,7 @@ def test_optimize_step_optional_gradient_clipping(monkeypatch, max_grad_norm, mi
     model = torch.nn.Linear(2, 1, bias=False)
     torch.nn.init.zeros_(model.weight)
     tokens = np.tile([30, 40], (8, 1))
-    monkeypatch.setattr(
-        "noisy_regression.train.teacher_forced_nll",
-        lambda model, tokens: torch.cat((model(tokens.float()), torch.zeros((len(tokens), 2))), dim=1),
-    )
+    monkeypatch.setattr("noisy_regression.train.teacher_forced_nll", lambda model, tokens: model(tokens.float()))
     config = TrainConfig(batch_size=4, micro_batch_size=micro_batch_size, precision="fp32", max_grad_norm=max_grad_norm)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
@@ -539,10 +498,7 @@ def test_optimize_step_rejects_nonfinite_gradients(monkeypatch, max_grad_norm):
     model = torch.nn.Linear(2, 1, bias=False)
     initial_weights = model.weight.detach().clone()
     monkeypatch.setattr(
-        "noisy_regression.train.teacher_forced_nll",
-        lambda model, tokens: torch.cat(
-            (model(tokens.float()) * float("nan"), torch.zeros((len(tokens), 2))), dim=1
-        ),
+        "noisy_regression.train.teacher_forced_nll", lambda model, tokens: model(tokens.float()) * float("nan")
     )
     config = TrainConfig(batch_size=4, micro_batch_size=4, precision="fp32", max_grad_norm=max_grad_norm)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -587,7 +543,7 @@ def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
     )
     summary = train(pool, tmp_path / "run", config, ModelConfig())
     assert summary["steps"] == 2 and summary["presentations"] == 8
-    assert summary["parameter_count"] == 988288
+    assert summary["parameter_count"] == 987776
     events = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
     evaluations = [event for event in events if event["kind"] == "evaluation"]
     assert [event["step"] for event in evaluations] == [0, 1, 2]

@@ -31,9 +31,6 @@ of 256 random completions. Neither is a single sampled answer or the most likely
 answer. Signal MSE squares the difference between the mean prediction and `s`,
 then averages across examples. It does not average individual samples' squared
 errors; that would additionally penalize the predictive distribution's spread.
-Training also predicts the deterministic `[EOS]` token after the two answer
-digits. That termination term contributes to the optimization objective but is
-kept separate from numerical answer NLL, pass@k, and predictive-mean metrics.
 
 For a predictor independent of fresh query noise,
 `E[(prediction - y)^2] = E[(prediction - s)^2] + sigma^2`.
@@ -96,7 +93,7 @@ The query-only predictor is centered at zero; its spread depends on the query
 norm and noise level. Uniform and both query-only variants therefore have the
 same mean prediction and signal MSE, even though their NLL/pass@k differ.
 
-Bayesian regression infers the coefficients from the 64 context examples under
+Bayesian regression infers the coefficients from the 16 context examples under
 the known Gaussian prior. The continuous version has extra input precision.
 The ridge version substitutes decoded grid centers into that Gaussian model;
 it does not integrate over every possible continuous value represented by the
@@ -215,8 +212,8 @@ bash noisy-regression/evaluate_ridge.sh
 ```
 
 Each creates a separate run in `noisy-regression-sft` and logs **once at step 0**.
-Current run names are `bayesian_continuous_d1_n64_10m_xy_range3_sigma0p001` and
-`ridge_quantized_d1_n64_10m_xy_range3_sigma0p001`, using the new 10M-pool evaluation split.
+Current run names are `bayesian_continuous_d2_n64_1m_xy_range3_sigma0p001` and
+`ridge_quantized_d2_n64_1m_xy_range3_sigma0p001`, using the new 1M-pool evaluation split.
 Each records the same 14 evaluation/pass scores, entropy, and two timing fields:
 17 history keys total. No completions are sampled and no model is trained.
 The shared keys allow comparing methods in the same panel or run-summary table;
