@@ -619,7 +619,9 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     np.testing.assert_array_equal(full_batch_indices, expected_indices)
     assert full_batch_metrics == pytest.approx(expected_metrics, rel=1e-4, abs=1e-7)
     for name, value in model.state_dict().items():
-        torch.testing.assert_close(value, expected_weights[name], rtol=1e-4, atol=1e-7)
+        # Changing the reduction partition perturbs near-zero gradients before
+        # AdamW; only the unchanged-microbatch replay above must be bitwise exact.
+        torch.testing.assert_close(value, expected_weights[name], rtol=1e-4, atol=1e-6)
     with pytest.raises(ValueError, match="same training configuration"):
         load_checkpoint(
             checkpoint, model, optimizer, scheduler, order, replace(config, batch_size=8), dataset_metadata
@@ -892,7 +894,11 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
             key.startswith(("reference/", "train_eval/", "trainer/", "progress/", "regression/", "likelihood/"))
             for key in values
         )
-        assert len(values) == (17 if step == 0 else 24 if step == 2 else 23)
+        for label, target in (("clean", "continuous_noiseless_signal"), ("noisy", "continuous_noisy_outcome")):
+            errors = evaluation["predictive_mean_errors"][target]
+            assert values[f"eval/target_variance/{label}"] == errors["target_variance"]
+            assert values[f"eval/mse_over_target_variance/{label}"] == errors["mse_over_target_variance"]
+        assert len(values) == (21 if step == 0 else 28 if step == 2 else 27)
         if step == 2:
             assert values["diagnostics/context_shuffle_nll_increase"] == pytest.approx(
                 evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]

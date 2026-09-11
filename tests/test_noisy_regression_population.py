@@ -1,5 +1,8 @@
 """Focused population-loss and end-to-end gradient checks; execute on the server."""
 
+import json
+import os
+import time
 from dataclasses import replace
 
 import numpy as np
@@ -7,7 +10,7 @@ import pytest
 import torch
 from noisy_regression.codec import CENTERS, DIGITS
 from noisy_regression.data import DatasetConfig, FrozenOrder, generate_split, prepare
-from noisy_regression.evaluate import evaluate
+from noisy_regression.evaluate import evaluate, select_device
 from noisy_regression.model import (
     ModelConfig,
     conditional_log_probs,
@@ -200,3 +203,32 @@ def test_population_train_checkpoint_resume(tmp_path):
 def test_invalid_degree_rejected(method, degree):
     with pytest.raises(ValueError):
         PopulationConfig(method, degree)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("CUDA_VISIBLE_DEVICES"), reason="Requires an explicitly selected free GPU"
+)
+def test_cuda_full_batch_smoke():
+    device = select_device("cuda:0", "bf16")
+    torch.set_num_threads(4)
+    torch.use_deterministic_algorithms(True)
+    arrays = generate_split(DatasetConfig(train_count=1024, eval_count=1), "train")
+    model = create_model(ModelConfig()).to(device)
+    optimizer, _ = make_optimizer(model, 1e-4, 0.9, 0.95, 0.01, 1e-8)
+    scheduler = make_scheduler(optimizer, 200, 20_000, 0, "linear_warmup_constant", warmup_start_factor=0.1)
+    config = TrainConfig(method="maxrl", maxrl_degree="inf", batch_size=1024, micro_batch_size=256)
+    started = time.perf_counter()
+    metrics, _ = optimize_step(
+        model, optimizer, scheduler, FrozenOrder(1024), arrays["tokens"], config, device
+    )
+    assert metrics["gradient_norm"] > 0
+    assert all(np.isfinite(value) for value in metrics["population"].values())
+    print(
+        json.dumps(
+            {
+                "seconds": time.perf_counter() - started,
+                "peak_cuda_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
+                **metrics,
+            }
+        )
+    )

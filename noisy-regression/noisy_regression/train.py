@@ -41,7 +41,7 @@ class TrainConfig:
     maxrl_tau: float = 0.1
     grpo_epsilon: float = 1e-8
     batch_size: int = 1024
-    micro_batch_size: int | None = None  # Default: min(1024, effective batch size).
+    micro_batch_size: int | None = None  # Default cap: 1024 for SFT, 256 for population RL.
     max_steps: int = 20_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
