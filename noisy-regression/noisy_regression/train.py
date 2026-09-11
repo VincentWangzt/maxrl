@@ -28,7 +28,7 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 @dataclass(frozen=True)
 class TrainConfig:
     batch_size: int = 1024
-    micro_batch_size: int = 128
+    micro_batch_size: int | None = None  # None resolves to the effective batch size.
     max_steps: int = 20_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
@@ -46,6 +46,10 @@ class TrainConfig:
     precision: str = "bf16"
     cpu_threads: int = 4
     log_interval: int = 10
+
+    def __post_init__(self):
+        if self.micro_batch_size is None:
+            object.__setattr__(self, "micro_batch_size", self.batch_size)
 
     def validate(self, splits):
         integers = (
@@ -127,9 +131,14 @@ def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
         for name in checkpoint_config.keys() | requested_config.keys()
         if checkpoint_config.get(name) != requested_config.get(name)
     }
-    extending_max_steps = changed_fields == {"max_steps"} and config.max_steps > checkpoint_config["max_steps"]
-    if changed_fields and not extending_max_steps:
-        raise ValueError("Resume requires the same training configuration; only max_steps may be increased")
+    extending_max_steps = "max_steps" in changed_fields and config.max_steps > checkpoint_config["max_steps"]
+    if changed_fields - {"micro_batch_size", "max_steps"} or (
+        "max_steps" in changed_fields and not extending_max_steps
+    ):
+        raise ValueError(
+            "Resume requires the same training configuration; only micro_batch_size may change "
+            "and only max_steps may be increased"
+        )
     if json.loads((path / "dataset_metadata.json").read_text()) != metadata:
         raise ValueError("Resume dataset fingerprint/configuration mismatch")
     saved_model_config = json.loads((path / "config.json").read_text())
@@ -222,12 +231,20 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     step, previous_elapsed = 0, 0.0
     best = {"answer_nll": None, "step": None, "checkpoint": None}
     resume_schedule = None
+    resume_micro_batch = None
     if resume is not None:
         state = load_checkpoint(resume, model, optimizer, scheduler, order, config, metadata)
         step, previous_elapsed, best = state["step"], state["elapsed_seconds"], state["best"]
         if step >= config.max_steps:
             raise ValueError("Checkpoint has already finished the requested optimizer steps")
         checkpoint_max_steps = state["checkpoint_training_config"]["max_steps"]
+        checkpoint_micro_batch = state["checkpoint_training_config"]["micro_batch_size"]
+        if checkpoint_micro_batch != config.micro_batch_size:
+            resume_micro_batch = {
+                "checkpoint_micro_batch_size": checkpoint_micro_batch,
+                "target_micro_batch_size": config.micro_batch_size,
+                "policy": "Same effective batches, optimizer and RNG state; floating-point results may differ.",
+            }
         retargeted = checkpoint_max_steps != config.max_steps
         if retargeted:
             scheduler = make_scheduler(
@@ -293,6 +310,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "data_path": str(Path(data_path).resolve()),
         "resume_from": str(Path(resume).resolve()) if resume else None,
         "resume_schedule": resume_schedule,
+        "resume_micro_batch": resume_micro_batch,
         "deterministic_algorithms": True,
         "randomness": "Fresh initialization and training shuffle; no fixed seeds",
         "likelihood_units": "answer metrics are nats per two-digit value; training additionally supervises EOS",
@@ -323,6 +341,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                         "git_commit",
                         "resume_from",
                         "resume_schedule",
+                        "resume_micro_batch",
                     )
                 },
             },
@@ -469,7 +488,9 @@ def main():
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )
     for name, field in TrainConfig.__dataclass_fields__.items():
-        argument_type = parse_max_grad_norm if name == "max_grad_norm" else type(field.default)
+        argument_type = (
+            parse_max_grad_norm if name == "max_grad_norm" else int if name == "micro_batch_size" else type(field.default)
+        )
         parser.add_argument(f"--{name.replace('_', '-')}", type=argument_type, default=field.default)
     args = vars(parser.parse_args())
     data, output, resume = args.pop("data"), args.pop("output"), args.pop("resume")

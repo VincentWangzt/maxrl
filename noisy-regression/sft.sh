@@ -5,13 +5,12 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
 RUN_NAME=""
 OUTPUT_DIR=""
-RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
+RESUME_CHECKPOINT="" # --resume requires a new output directory or run name.
 GPU_ID=2
 ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
 BATCH_SIZE=1024
-MICRO_BATCH_SIZE=128
 MAX_STEPS=20000
 EVAL_INTERVAL=500
 LEARNING_RATE=1e-4
@@ -34,7 +33,7 @@ NUM_HIDDEN_LAYERS=4
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir)
+    --gpu-id|--batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
@@ -49,12 +48,15 @@ while (( $# )); do
         --max-grad-norm) MAX_GRAD_NORM="$2" ;;
         --run-name) RUN_NAME="$2" ;;
         --output-dir) OUTPUT_DIR="$2" ;;
+        --resume) RESUME_CHECKPOINT="$2" ;;
       esac
       shift 2
       ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+# Resolve after CLI overrides so every sweep uses one full-batch backward pass.
+MICRO_BATCH_SIZE="${BATCH_SIZE}"
 [[ "${NUM_HIDDEN_LAYERS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "Number of hidden layers must be a positive integer." >&2; exit 2;
 }

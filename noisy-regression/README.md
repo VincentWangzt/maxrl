@@ -12,7 +12,7 @@ GitHub, then pull on the server before preparing data, validating or training.
 | Context and query noise standard deviation | 0.001 |
 | Numerical codec | 256 inclusive centers on [-4,4]; two base-16 digits per scalar |
 | Model | Scratch Qwen2, 4 layers, hidden 128, MLP 512; 988,288 parameters |
-| Effective batch / microbatch | 1,024 / 128 (8 accumulation passes) |
+| Effective batch / microbatch | 1,024 / 1,024 (one forward/backward pass) |
 | Optimizer steps | 20,000 |
 | Learning rate | 1e-4 |
 | Warmup | 200 updates, from 10% to 100% of the learning rate |
@@ -89,6 +89,8 @@ The sweep calls the same `sft.sh` for all five runs:
 | 8 | 1,024 | 5e-5 | 5e-6 | 20,480,000 / 2.048 |
 | 9 | 1,024 | 2e-4 | 2e-5 | 20,480,000 / 2.048 |
 
+Microbatch size defaults to the effective batch size, including batch overrides:
+512, 1,024 or 2,048. Every update uses one forward/backward pass.
 Every run uses the same frozen pools and 20,000 updates. The batch comparison
 changes both gradient batch size and total presentations. Independent
 initialization and shuffling also contribute variation; this is a single-run
@@ -128,8 +130,11 @@ GPU 2 (which must be free). `evaluate_bayesian.sh` and `evaluate_ridge.sh` run
 CPU baselines on the same evaluation pool. The continuous Bayesian baseline
 sees extra precision; decoded-input ridge uses an approximate uncertainty model.
 
-For recovery, set `RESUME_CHECKPOINT` and a new `OUTPUT_DIR` in `sft.sh`.
-Settings must match the checkpoint, except that the horizon may be increased.
-RNG, optimizer and shuffle state are restored. Legacy datasets, checkpoints,
+For recovery, pass `--resume CHECKPOINT` and a new `--output-dir` or `--run-name`
+to `sft.sh`. Settings must match the checkpoint, except that the horizon may be
+increased and microbatch size may change while the effective batch stays fixed.
+RNG, optimizer, scheduler and shuffle state are restored. A microbatch change is
+recorded in the manifest and W&B config; floating-point trajectories may differ.
+Legacy datasets, checkpoints,
 sweep scripts and reports have been retired; historical source and reports
 remain available through Git history.

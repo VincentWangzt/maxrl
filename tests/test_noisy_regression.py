@@ -442,11 +442,19 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
         sampled_mean_mse(completions, signals)
 
 
+@pytest.mark.parametrize("batch_size", [512, 1024, 2048])
+def test_microbatch_defaults_to_effective_batch(batch_size):
+    config = TrainConfig(batch_size=batch_size)
+    config.validate({})
+    assert config.micro_batch_size == batch_size
+    assert TrainConfig(batch_size=batch_size, micro_batch_size=128).micro_batch_size == 128
+
+
 @pytest.mark.parametrize("learning_rate", [5e-5, 1e-4, 2e-4])
 def test_learning_rate_warms_up_then_stays_constant(learning_rate):
     assert TrainConfig().learning_rate == 1e-4
     config = TrainConfig(learning_rate=learning_rate)
-    assert config.batch_size == 1024 and config.micro_batch_size == 128
+    assert config.batch_size == config.micro_batch_size == 1024
     assert config.max_steps == 20_000 and config.warmup_steps == 200
     assert config.warmup_start_factor == 0.1 and config.min_learning_rate == 0
     assert config.learning_rate_schedule == "linear_warmup_constant"
@@ -516,6 +524,16 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     extended = replace(config, max_steps=4)
     extended_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, extended, {})
     assert extended_state["checkpoint_training_config"] == asdict(config)
+    full_batch_config = replace(config, micro_batch_size=config.batch_size)
+    full_batch_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, full_batch_config, {})
+    assert full_batch_state["checkpoint_training_config"] == asdict(config)
+    full_batch_metrics, full_batch_indices = optimize_step(
+        model, optimizer, scheduler, order, arrays["tokens"], full_batch_config, device
+    )
+    np.testing.assert_array_equal(full_batch_indices, expected_indices)
+    assert full_batch_metrics == pytest.approx(expected_metrics, rel=1e-4, abs=1e-7)
+    with pytest.raises(ValueError, match="same training configuration"):
+        load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, batch_size=8), {})
     with pytest.raises(ValueError, match="only max_steps may be increased"):
         load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, max_steps=2), {})
 
@@ -710,7 +728,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     recorded_run, init_arguments = recorded_wandb
     pool = tmp_path / "data"
     prepare(pool, DatasetConfig(train_count=8, eval_count=4, sigma=0.01))
-    assert TrainConfig().batch_size == 1024 and TrainConfig().micro_batch_size == 128
+    assert TrainConfig().batch_size == TrainConfig().micro_batch_size == 1024
     if max_grad_norm is None:
         monkeypatch.setattr(
             torch.nn.utils,
