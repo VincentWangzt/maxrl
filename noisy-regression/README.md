@@ -115,12 +115,12 @@ same held-out evaluation archive:
 
 ```bash
 source noisy-regression/config.sh
-ONE_M_DATA="${REPO_ROOT}/noisy-regression/data/subset_d2_n64_1m_sep_eoo_range4_sigma0p001"
+ONE_M_DATA="${REPO_ROOT}/noisy-regression/data/${DATA_NAME/10m/1m_subset}"
 CUDA_VISIBLE_DEVICES="" PYTHONPATH="${REPO_ROOT}/noisy-regression:${REPO_ROOT}" \
   "${VENV_DIR}/bin/python" -m noisy_regression.curate \
   --source "${DATA_DIR}" --output "${ONE_M_DATA}" --train-count 1000000
 bash noisy-regression/sft.sh --gpu-id 2 --data-dir "${ONE_M_DATA}" \
-  --run-name canonical_d2_n64_1m_subset_sep_eoo_range4_sigma0p001_bs1024_lr1e-4
+  --run-name "${RUN_PREFIX/10m/1m_subset}_bs1024_lr1e-4"
 ```
 
 Curation verifies the source pool, preserves each selected problem's IDs,
