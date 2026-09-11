@@ -34,7 +34,7 @@ errors; that would additionally penalize the predictive distribution's spread.
 
 For a predictor independent of fresh query noise,
 `E[(prediction - y)^2] = E[(prediction - s)^2] + sigma^2`.
-The current pool uses sigma=0.001, so the expected added error is 0.000001.
+The current pool uses sigma=0.1, so the expected added error is 0.01.
 The identity is an expectation, not an exact
 difference on a finite frozen pool. Quantization/clipping further changes the
 decoded-target error.
@@ -213,8 +213,8 @@ bash noisy-regression/evaluate_ridge.sh
 ```
 
 Each creates a separate run in `noisy-regression-sft` and logs **once at step 0**.
-Current run names are `bayesian_continuous_d2_n64_10m_sep_eoo_range4_sigma0p001` and
-`ridge_quantized_d2_n64_10m_sep_eoo_range4_sigma0p001`, using the 10M-pool evaluation split.
+Current run names are `bayesian_continuous_d2_n64_10m_sep_eoo_range4_sigma0p1` and
+`ridge_quantized_d2_n64_10m_sep_eoo_range4_sigma0p1`, using the 10M-pool evaluation split.
 Each records the same 14 evaluation/pass scores, entropy, and two timing fields:
 17 history keys total. No completions are sampled and no model is trained.
 The shared keys allow comparing methods in the same panel or run-summary table;

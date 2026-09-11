@@ -482,7 +482,7 @@ def main():
     parser.add_argument("--project-name", default="noisy-regression-sft")
     parser.add_argument(
         "--experiment-name",
-        default="canonical_d2_n64_10m_sep_eoo_range4_sigma0p001_bs1024_lr1e-4",
+        default="canonical_d2_n64_10m_sep_eoo_range4_sigma0p1_bs1024_lr1e-4",
     )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"

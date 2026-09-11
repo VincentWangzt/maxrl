@@ -2,7 +2,7 @@
 set -euo pipefail
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
-RUN_NAME="ridge_quantized_d2_n64_10m_sep_eoo_range4_sigma0p001"
+RUN_NAME="ridge_quantized_d2_n64_10m_sep_eoo_range4_sigma0p1"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
 PROJECT_NAME="noisy-regression-sft"
 USE_WANDB=true
