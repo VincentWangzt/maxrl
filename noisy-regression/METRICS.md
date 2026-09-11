@@ -229,3 +229,49 @@ This schema applies to newly started logger instances. Existing W&B histories
 and workspace panels are not rewritten by a code update; the completed run
 retains its old keys. New runs use the new groups. This change does not replay,
 rename, or upload any previous run's artifacts.
+# Exact population training objectives
+
+For each prompt, `p(a,b)=p(a|prompt)p(b|prompt,a)` covers all 256 digit pairs.
+Let `v(a,b)=-4+(16a+b)*8/255` and let `y` be the decoded **observed target
+digits**. Training averages one loss per prompt, without dividing by two tokens.
+The following objectives replace both answer-digit and EOS SFT losses:
+
+- **RLOO:** `E_p[(v-y)^2]`, the exact population-limit RLOO gradient. The expected
+  score of the population mean baseline vanishes; no finite-group correction is
+  applied to the 256 enumerated actions.
+- **GRPO:** `-sum stopgrad(p*A)*log(p)`, with reward `r=-(v-y)^2` and
+  `A=(r-E_p[r])/(sqrt(Var_p[r])+epsilon)`. All moments are probability weighted,
+  and the score weights are detached. Default epsilon is `1e-8`. Its logged loss
+  is a score-function surrogate, not a scalar objective comparable across methods.
+- **MaxRL:** Gaussian reward `s=exp(-(v-y)^2/(2*tau^2))`, with `Z=E_p[s]`.
+  Degree `d` minimizes `sum_{k=1}^d (1-Z)^k/k`; `inf` minimizes `-log(Z)`.
+  The finite-degree gradient equals the log-objective gradient multiplied by
+  `1-(1-Z)^d`. Log-space reward normalization prevents underflow from clipping
+  the infinite-degree gradient. The logged loss is the actual scalar objective,
+  and the surrogate gives its exact gradient. `tau` is independent of data sigma.
+
+Optimization events contain a `population` dictionary, mirrored as
+`train/population/*` in W&B. Evaluation dictionaries contain the same metrics
+with mean/SE, mirrored as `eval/population/*`:
+
+| Metric | Definition |
+| --- | --- |
+| `loss` | RLOO objective, GRPO surrogate, or MaxRL objective as above |
+| `expected_mse` | `E_p[(v-y)^2]`, exact single-sample MSE |
+| `predictive_mean_mse` | `(E_p[v]-y)^2`, against decoded observed target |
+| `predictive_variance` | `Var_p[v]`; expected MSE = mean MSE + this variance |
+| `reward_mean`, `reward_std` | Population moments of negative squared error |
+| `entropy_nats` | Joint two-digit entropy |
+| `answer_nll` | Nats at the observed digit pair |
+| `maxrl_expected_reward` | `Z`, MaxRL only |
+| `maxrl_log_expected_reward` | `log Z`, remains usable when `Z` underflows |
+| `maxrl_gradient_scale` | `1-(1-Z)^d`, or 1 for infinite degree |
+
+Existing clean/noisy continuous predictive-mean MSE, quantized NLL, pass@k,
+entropy, learning rate and gradient norm remain available for comparison with
+SFT. Following nanochat's scalar evaluation, `eval/target_variance/{clean,noisy}`
+and `eval/mse_over_target_variance/{clean,noisy}` use the population variance of
+the held-out targets (ddof=0), not model predictive variance or known noise
+variance. A constant target pool records a null ratio. Checkpoint selection
+continues to use held-out noisy answer NLL; this criterion differs from the RL
+objectives and should be considered when comparing best checkpoints.

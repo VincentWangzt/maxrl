@@ -79,6 +79,65 @@ and shuffle state for resumption.
 
 ## Launching
 
+### Exact population RL
+
+`grpo.sh`, `rloo.sh`, and `maxrl.sh` use the same scratch model, frozen pools,
+optimizer, 200-update warmup, 20,000-step horizon, evaluation and checkpoints
+as `sft.sh`. All four scripts call the shared `train.sh`; RL replaces the entire
+SFT objective, including EOS supervision. Answers have a fixed two-digit length.
+Each prompt enumerates **all 16 × 16 = 256 joint answers** with gradients through
+one shared prompt prefill and all first-digit cache branches. Both digits are
+restricted to the digit vocabulary. There is no sampling, PPO clipping, reference
+model, KL penalty, or entropy bonus.
+
+```bash
+bash noisy-regression/grpo.sh --gpu-id 3
+bash noisy-regression/rloo.sh --gpu-id 3
+bash noisy-regression/maxrl.sh --gpu-id 3 --maxrl-degree 256 --maxrl-tau 0.1
+bash noisy-regression/maxrl.sh --gpu-id 3 --maxrl-degree inf --maxrl-tau 0.1
+```
+
+Run these individually on a free GPU. MaxRL requires an explicit positive integer
+degree or `inf`. The Gaussian reward width `--maxrl-tau` defaults to 0.1 in
+decoded scalar units, independently of dataset sigma. RLOO and GRPO use negative
+squared error against the **decoded observed answer tokens**, following nanochat's
+scalar reference. MaxRL uses a Gaussian reward against that same target; continuous
+query outcomes and latent clean signals are evaluation targets only. Thus, for
+sigma=0.001, reward targets still have codec spacing ~0.0314.
+
+RL defaults to microbatch 256, accumulating four microbatches for effective batch
+1024 to accommodate gradients through every branch. SFT keeps microbatch 1024.
+Numerical accumulation can differ from a single large microbatch. All methods
+log to the existing `noisy-regression-sft` W&B project, with method and objective
+parameters in each run's config. See [METRICS.md](METRICS.md) for the objectives,
+population diagnostics and the distinction between predictive-mean and sample MSE.
+
+The following server queue schedules the requested eight runs on two idle GPUs:
+
+```bash
+nohup .venv/bin/python -u noisy-regression/sweep_population.py \
+  --name population_20260912 --maxrl-tau 0.1 \
+  > noisy-regression/population_20260912.launch.log 2>&1 < /dev/null &
+```
+
+It reuses the existing d=2, n=64, 10M-example pools at sigma=0.001 and 0.1,
+crossed with GRPO, RLOO and MaxRL degrees 256 and infinity. All runs use LR 1e-4,
+effective batch 1024 and 20,000 updates. This sweep explicitly permits GPU
+selection: it checks compute processes, memory and utilization, selects at most
+two physical GPUs, and reuses those devices for subsequent jobs. If only one is
+idle, it starts that worker and waits for a second free device. Launchers recheck
+GPU occupancy before training. Per-run state, commands, PIDs, selected GPUs and
+exit codes are recorded in `noisy-regression/logs/NAME/runs.json`, beside child
+logs. Existing output directories are rejected. Runs start from independent fresh
+initializations, so this is a single-run comparison without paired randomness.
+
+Focused CPU validation after Git synchronization:
+
+```bash
+CUDA_VISIBLE_DEVICES="" PYTHONPATH="$PWD/noisy-regression:$PWD" \
+  .venv/bin/python -m pytest -q tests/test_noisy_regression_population.py
+```
+
 From the server checkout, after Git synchronization:
 
 ```bash

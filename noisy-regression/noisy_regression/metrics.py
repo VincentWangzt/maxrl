@@ -121,5 +121,9 @@ def distribution_summary(log_probs, arrays):
             "mse": mean_se(errors**2),
             "mae": mean_se(np.abs(errors)),
             "bias": mean_se(errors),
+            "target_variance": float(np.var(target)),
+            "mse_over_target_variance": float(np.mean(errors**2) / np.var(target))
+            if np.var(target) > 0
+            else None,
         }
     return result

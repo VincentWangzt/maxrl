@@ -1,4 +1,4 @@
-"""Resumable fixed-pool SFT; all execution belongs on cmu-L40-live."""
+"""Resumable fixed-pool SFT or exact population RL; execute on cmu-L40-live."""
 
 import argparse
 import json
@@ -20,13 +20,26 @@ from transformers import AutoModelForCausalLM
 from noisy_regression.codec import save_codec, sequence_layout
 from noisy_regression.data import DatasetConfig, FrozenOrder, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
-from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
+from noisy_regression.model import (
+    ModelConfig,
+    conditional_log_probs,
+    create_model,
+    joint_log_probs,
+    make_optimizer,
+    make_scheduler,
+    teacher_forced_nll,
+)
+from noisy_regression.population import PopulationConfig, parse_degree, population_loss
 from noisy_regression.references import reference_report
 from noisy_regression.tracking import TrackingConfig, initialize_tracking
 
 
 @dataclass(frozen=True)
 class TrainConfig:
+    method: str = "sft"
+    maxrl_degree: int | str | None = None
+    maxrl_tau: float = 0.1
+    grpo_epsilon: float = 1e-8
     batch_size: int = 1024
     micro_batch_size: int | None = None  # Default: min(1024, effective batch size).
     max_steps: int = 20_000
@@ -49,7 +62,17 @@ class TrainConfig:
 
     def __post_init__(self):
         if self.micro_batch_size is None:
-            object.__setattr__(self, "micro_batch_size", min(1024, self.batch_size))
+            object.__setattr__(
+                self, "micro_batch_size", min(1024 if self.method == "sft" else 256, self.batch_size)
+            )
+        if self.method == "sft":
+            if self.maxrl_degree is not None:
+                raise ValueError("maxrl_degree is only valid for MaxRL")
+        else:
+            self.population_config()
+
+    def population_config(self):
+        return PopulationConfig(self.method, self.maxrl_degree, self.maxrl_tau, self.grpo_epsilon)
 
     def validate(self, splits):
         integers = (
@@ -77,7 +100,9 @@ class TrainConfig:
             or self.weight_decay < 0
         ):
             raise ValueError("Invalid optimizer settings")
-        if self.max_grad_norm is not None and (not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0):
+        if self.max_grad_norm is not None and (
+            not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
+        ):
             raise ValueError("max_grad_norm must be None or a finite positive value")
 
 
@@ -137,8 +162,7 @@ def load_checkpoint(path, model, optimizer, scheduler, order, config, metadata):
         "max_steps" in changed_fields and not extending_max_steps
     ):
         raise ValueError(
-            "Resume requires the same training configuration; only micro_batch_size may change "
-            "and only max_steps may be increased"
+            "Resume requires the same training configuration; only micro_batch_size may change and only max_steps may be increased"
         )
     if json.loads((path / "dataset_metadata.json").read_text()) != metadata:
         raise ValueError("Resume dataset fingerprint/configuration mismatch")
@@ -168,16 +192,28 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     indices = order.take(config.batch_size)
     answer_nll_sum = torch.zeros((), device=device)
     eos_nll_sum = torch.zeros((), device=device)
+    population_sums = {}
     for start in range(0, config.batch_size, config.micro_batch_size):
         tokens = torch.tensor(
             train_tokens[indices[start : start + config.micro_batch_size]].astype(np.int64), device=device
         )
         with precision_context(device, config.precision):
-            token_nll = teacher_forced_nll(model, tokens)
-            loss = token_nll.sum() / config.batch_size
+            if config.method == "sft":
+                token_nll = teacher_forced_nll(model, tokens)
+                loss = token_nll.sum() / config.batch_size
+            else:
+                first, second = conditional_log_probs(model, tokens[:, :-3])
+                losses, diagnostics = population_loss(
+                    joint_log_probs(first, second), tokens[:, -3:-1], config.population_config()
+                )
+                loss = losses.sum() / config.batch_size
         loss.backward()
-        answer_nll_sum += token_nll[:, :2].detach().sum()
-        eos_nll_sum += token_nll[:, 2].detach().sum()
+        if config.method == "sft":
+            answer_nll_sum += token_nll[:, :2].detach().sum()
+            eos_nll_sum += token_nll[:, 2].detach().sum()
+        else:
+            for name, values in diagnostics.items():
+                population_sums[name] = population_sums.get(name, 0) + values.sum()
     if config.max_grad_norm is None:
         gradient_norm = torch.nn.utils.get_total_norm(
             (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
@@ -192,11 +228,21 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     lr = optimizer.param_groups[0]["lr"]
     optimizer.step()
     scheduler.step()
-    return (
+    objective_metrics = (
         {
             "answer_nll": answer_nll_sum.item() / config.batch_size,
             "eos_nll": eos_nll_sum.item() / config.batch_size,
             "completion_nll": (answer_nll_sum + eos_nll_sum).item() / config.batch_size,
+        }
+        if config.method == "sft"
+        else {
+            "answer_nll": population_sums["answer_nll"].item() / config.batch_size,
+            "population": {name: value.item() / config.batch_size for name, value in population_sums.items()},
+        }
+    )
+    return (
+        {
+            **objective_metrics,
             "gradient_norm": float(gradient_norm),
             "learning_rate": lr,
         },
@@ -223,8 +269,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     config.validate(splits)
     if model_config.max_position_embeddings < layout.sequence_length:
         raise ValueError(
-            f"Model context {model_config.max_position_embeddings} is shorter than dataset sequence "
-            f"length {layout.sequence_length}; truncation is forbidden"
+            f"Model context {model_config.max_position_embeddings} is shorter than dataset sequence length {layout.sequence_length}; truncation is forbidden"
         )
     output_path = Path(output_path).resolve()
     output_path.mkdir(parents=True, exist_ok=False)
@@ -275,8 +320,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             "completed_steps": step,
             "retargeted": retargeted,
             "policy": (
-                "The new horizon applies from the first resumed update; completed updates retain their original "
-                "learning-rate history."
+                "The new horizon applies from the first resumed update; completed updates retain their original learning-rate history."
                 if retargeted
                 else "The checkpoint scheduler state is restored exactly."
             ),
@@ -305,11 +349,13 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
-        "training_objective": "two constrained digit NLLs plus full-vocabulary EOS NLL",
+        "training_objective": (
+            "two constrained digit NLLs plus full-vocabulary EOS NLL"
+            if config.method == "sft"
+            else f"exact population {config.method} over all 256 digit pairs; decoded noisy token target; no EOS loss"
+        ),
         "learning_rate_schedule": (
-            f"{config.learning_rate_schedule}; linear warmup from "
-            f"{config.warmup_start_factor * config.learning_rate:g} to "
-            f"{config.learning_rate:g}, then "
+            f"{config.learning_rate_schedule}; linear warmup from {config.warmup_start_factor * config.learning_rate:g} to {config.learning_rate:g}, then "
             + (
                 f"cosine decay to {config.min_learning_rate:g}"
                 if config.learning_rate_schedule == "linear_warmup_cosine_decay"
@@ -326,7 +372,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "resume_micro_batch": resume_micro_batch,
         "deterministic_algorithms": True,
         "randomness": "Fresh initialization and training shuffle; no fixed seeds",
-        "likelihood_units": "answer metrics are nats per two-digit value; training additionally supervises EOS",
+        "likelihood_units": "answer metrics are nats per two-digit value; EOS is supervised only for SFT",
         "evaluation_policy": "Full held-out pool plus the just-optimized training batch at evaluation steps",
     }
     write_json(output_path / "manifest.json", manifest)
@@ -343,7 +389,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             output_path,
             {
                 **manifest["training"],
-                "method": "sft",
+                "method": config.method,
                 **{
                     name: manifest[name]
                     for name in (
@@ -399,6 +445,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                 device,
                 config.precision,
                 output_path / f"evaluation-{current_step:05d}.npz",
+                population_config=config.population_config() if config.method != "sft" else None,
             ),
         }
         if train_batch_indices is not None:
@@ -409,6 +456,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                 config.eval_batch_size,
                 device,
                 config.precision,
+                population_config=config.population_config() if config.method != "sft" else None,
             )
             metrics["train_batch_ids"] = train_batch["ids"].tolist()
         if final:
@@ -503,9 +551,11 @@ def main():
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"
     )
     for name, field in TrainConfig.__dataclass_fields__.items():
-        argument_type = (
-            parse_max_grad_norm if name == "max_grad_norm" else int if name == "micro_batch_size" else type(field.default)
-        )
+        argument_type = {
+            "max_grad_norm": parse_max_grad_norm,
+            "micro_batch_size": int,
+            "maxrl_degree": parse_degree,
+        }.get(name, type(field.default))
         parser.add_argument(f"--{name.replace('_', '-')}", type=argument_type, default=field.default)
     args = vars(parser.parse_args())
     data, output, resume = args.pop("data"), args.pop("output"), args.pop("resume")

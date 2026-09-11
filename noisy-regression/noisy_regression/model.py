@@ -68,8 +68,7 @@ def answer_labels(tokens):
         or not torch.all(tokens[:, -1] == EOS)
     ):
         raise ValueError(
-            "Expected complete examples with one [QUERY] [X], beginning with [BOS], "
-            "and ending in [Y] digit digit [EOS]"
+            "Expected complete examples with one [QUERY] [X], beginning with [BOS], and ending in [Y] digit digit [EOS]"
         )
     if torch.any((tokens[:, -3:-1] < 0) | (tokens[:, -3:-1] >= DIGITS)):
         raise ValueError("Targets must be digit pairs")
@@ -101,12 +100,13 @@ def teacher_forced_nll(model, tokens):
     return answer_nll_from_logits(model(input_ids=tokens, use_cache=False).logits, tokens)
 
 
-@torch.no_grad()
 def conditional_log_probs(model, prompts):
     """Prefill once per prompt, then extend its KV cache with all 16 first digits.
 
     The same conditional table supports real sequential sampling and exact
-    enumeration. No full prompt is repeated for the 256 completions.
+    enumeration, including training with gradients through the shared prefill
+    and every branch. Callers disable gradients for evaluation. No full prompt
+    is repeated for the 256 completions.
     """
     if (
         prompts.ndim != 2
@@ -198,7 +198,9 @@ def make_scheduler(
         raise ValueError("Scheduler requires one shared base learning rate")
     (base_learning_rate,) = base_learning_rates
     if base_learning_rate <= 0 or not 0 <= min_learning_rate <= base_learning_rate:
-        raise ValueError("Require base learning rate > 0 and 0 <= minimum learning rate <= base learning rate")
+        raise ValueError(
+            "Require base learning rate > 0 and 0 <= minimum learning rate <= base learning rate"
+        )
     if schedule not in ("linear_warmup_cosine_decay", "linear_warmup_constant"):
         raise ValueError(f"Unknown learning-rate schedule: {schedule}")
     minimum_ratio = min_learning_rate / base_learning_rate

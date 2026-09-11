@@ -26,6 +26,15 @@ def evaluation_metrics(evaluation):
     for target, source in (("clean", "clean_exact_pass"), ("noisy", "exact_pass")):
         for k in DASHBOARD_KS:
             metrics[f"pass@k_exact/pass@{k}/{target}"] = evaluation[source][str(k)]["mean"]
+    if "population" in evaluation:
+        metrics.update(
+            {f"eval/population/{name}": value["mean"] for name, value in evaluation["population"].items()}
+        )
+    for label, target in (("clean", "continuous_noiseless_signal"), ("noisy", "continuous_noisy_outcome")):
+        errors = evaluation["predictive_mean_errors"][target]
+        if "target_variance" in errors:
+            metrics[f"eval/target_variance/{label}"] = errors["target_variance"]
+            metrics[f"eval/mse_over_target_variance/{label}"] = errors["mse_over_target_variance"]
     if "mismatched_context_control" in evaluation:
         metrics["diagnostics/context_shuffle_nll_increase"] = (
             evaluation["mismatched_context_control"]["answer_nll"]["mean"] - evaluation["answer_nll"]["mean"]
@@ -36,6 +45,9 @@ def evaluation_metrics(evaluation):
 def event_metrics(event):
     metrics = {"timing/elapsed_seconds": event["elapsed_seconds"]}
     if event["kind"] == "optimization":
+        metrics.update(
+            {f"train/population/{name}": value for name, value in event.get("population", {}).items()}
+        )
         metrics.update(
             {
                 "train/answer_nll": event["answer_nll"],

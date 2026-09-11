@@ -13,6 +13,7 @@ from noisy_regression.codec import sequence_layout
 from noisy_regression.data import load_pool, subset, write_json
 from noisy_regression.metrics import distribution_summary, mean_se
 from noisy_regression.model import conditional_log_probs, joint_log_probs, teacher_forced_nll
+from noisy_regression.population import population_loss
 
 
 def precision_context(device, precision):
@@ -27,7 +28,9 @@ def precision_context(device, precision):
 
 def select_device(name, precision):
     if name not in ("cpu", "cuda:0"):
-        raise ValueError("Use cpu or cuda:0 with CUDA_VISIBLE_DEVICES set to the explicitly selected physical GPU")
+        raise ValueError(
+            "Use cpu or cuda:0 with CUDA_VISIBLE_DEVICES set to the explicitly selected physical GPU"
+        )
     device = torch.device(name)
     if device.type == "cuda":
         import os
@@ -69,6 +72,7 @@ def evaluate(
     device,
     precision,
     artifact_path=None,
+    population_config=None,
 ):
     if eval_batch_size < 1 or len(arrays["tokens"]) < 1:
         raise ValueError("Require a positive evaluation batch size and a nonempty pool")
@@ -83,6 +87,13 @@ def evaluate(
         log_prob_parts.append(joint_log_probs(first, second).cpu().numpy())
     log_probs = np.concatenate(log_prob_parts)
     report = distribution_summary(log_probs, arrays)
+    if population_config is not None:
+        _, diagnostics = population_loss(
+            torch.from_numpy(log_probs),
+            torch.tensor(arrays["tokens"][:, -3:-1].astype(np.int64)),
+            population_config,
+        )
+        report["population"] = {name: mean_se(value.numpy()) for name, value in diagnostics.items()}
     if artifact_path is not None:
         np.savez_compressed(
             artifact_path,
@@ -112,9 +123,9 @@ def main():
     if metadata != saved_metadata:
         raise ValueError("Checkpoint and dataset metadata differ")
     args.output.mkdir(parents=True, exist_ok=False)
-    model = AutoModelForCausalLM.from_pretrained(args.checkpoint, attn_implementation="sdpa", local_files_only=True).to(
-        device
-    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.checkpoint, attn_implementation="sdpa", local_files_only=True
+    ).to(device)
     report = evaluate(
         model,
         splits["eval"],
