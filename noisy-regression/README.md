@@ -128,10 +128,10 @@ nohup bash noisy-regression/sweep_context_noise.sh context_noise_20260912 > nois
 
 | GPU | Context observations | Sigma | Complete sequence tokens |
 | --- | ---: | ---: | ---: |
-| 0 | 16 | 0.001 | 172 |
-| 1 | 16 | 0.25 | 172 |
-| 2 | 32 | 0.001 | 332 |
-| 3 | 32 | 0.25 | 332 |
+| 4 | 16 | 0.001 | 172 |
+| 6 | 16 | 0.25 | 172 |
+| 7 | 32 | 0.001 | 332 |
+| 8 | 32 | 0.25 | 332 |
 
 Each pool contains 10M training and 1,024 held-out examples. CPU preparation
 runs in parallel; each successful preparation launches `sft.sh` on its assigned

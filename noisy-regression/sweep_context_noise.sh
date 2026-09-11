@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
 
 # Explicit physical GPU assignments for the d=2 context/noise cross product.
-GPUS=(0 1 2 3)
+GPUS=(4 6 7 8)
 CONTEXTS=(16 16 32 32)
 SIGMAS=(0.001 0.25 0.001 0.25)
 TRAIN_COUNT=10000000
