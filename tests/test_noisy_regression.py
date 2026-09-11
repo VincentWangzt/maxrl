@@ -35,11 +35,13 @@ from noisy_regression.codec import (
     encode,
     quantize,
 )
+from noisy_regression.curate import curate
 from noisy_regression.data import (
     DatasetConfig,
     FrozenOrder,
     array_hash,
     clipping_summary,
+    file_hash,
     generate_split,
     load_pool,
     prepare,
@@ -154,6 +156,36 @@ def test_unseeded_splits_are_fresh_and_saved_pool_is_frozen(tmp_path):
     (directory / "metadata.json").write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="schema mismatch"):
         load_pool(directory)
+
+
+def test_curated_pool_is_nested_and_preserves_evaluation(tmp_path):
+    source, output = tmp_path / "source", tmp_path / "subset"
+    original_metadata = prepare(source, DatasetConfig(train_count=8, eval_count=4))
+    metadata = curate(source, output, 3)
+    original, _ = load_pool(source)
+    selected, loaded_metadata = load_pool(output)
+    assert metadata == loaded_metadata
+    assert metadata["config"] == {**original_metadata["config"], "train_count": 3}
+    assert metadata["splits"]["train"]["count"] == metadata["splits"]["train"]["unique_prompts"] == 3
+    assert metadata["splits"]["eval"] == original_metadata["splits"]["eval"]
+    assert file_hash(source / "eval.npz") == file_hash(output / "eval.npz")
+    indices = np.load(output / "train_source_indices.npy", allow_pickle=False)
+    assert len(indices) == len(set(indices)) == 3
+    assert ((0 <= indices) & (indices < 8)).all() and (np.diff(indices) > 0).all()
+    for name in original["train"]:
+        np.testing.assert_array_equal(selected["train"][name], original["train"][name][indices])
+    for name in original["eval"]:
+        np.testing.assert_array_equal(selected["eval"][name], original["eval"][name])
+    assert metadata["provenance"]["source_metadata_sha256"] == file_hash(source / "metadata.json")
+    assert metadata["provenance"]["source_train_file_sha256"] == original_metadata["splits"]["train"]["file_sha256"]
+    assert metadata["provenance"]["indices_file_sha256"] == file_hash(output / "train_source_indices.npy")
+    assert not set(selected["train"]["prompt_hashes"]) & set(selected["eval"]["prompt_hashes"])
+    with pytest.raises(FileExistsError):
+        curate(source, output, 3)
+    for count in (0, 8, 9):
+        with pytest.raises(ValueError, match="source training count"):
+            curate(source, tmp_path / f"invalid-{count}", count)
+    assert file_hash(source / "metadata.json") == metadata["provenance"]["source_metadata_sha256"]
 
 
 def test_experiment_rngs_do_not_receive_fixed_seeds(monkeypatch):

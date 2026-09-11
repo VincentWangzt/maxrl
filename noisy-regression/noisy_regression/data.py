@@ -105,6 +105,21 @@ def clipping_summary(arrays):
     return result
 
 
+def save_split(directory, split, arrays):
+    path = Path(directory) / f"{split}.npz"
+    print(f"Writing and fingerprinting {split} archive", flush=True)
+    np.savez(path, **arrays)
+    metadata = {
+        "count": len(arrays["tokens"]),
+        "content_sha256": array_hash(arrays),
+        "file_sha256": file_hash(path),
+        "unique_prompts": len(set(arrays["prompt_hashes"])),
+        "clipping": clipping_summary(arrays),
+    }
+    print(f"Finished {split}: {path.stat().st_size:,} bytes", flush=True)
+    return metadata
+
+
 def prepare(directory, config):
     config.validate()
     directory = Path(directory)
@@ -122,7 +137,7 @@ def prepare(directory, config):
         "config": asdict(config),
         "codec": codec_config(),
         "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
-        "storage": "uncompressed npz; avoid compression overhead for the 10M pool",
+        "storage": "uncompressed npz",
         "prompt_format": (
             f"[BOS] ([X] x_1 [SEP] x_2 [Y] y [EOO]) * {config.observations} "
             "[QUERY] [X] query_x_1 [SEP] query_x_2 [Y] answer [EOS]"
@@ -133,17 +148,7 @@ def prepare(directory, config):
         "splits": {},
     }
     for split, arrays in splits.items():
-        path = directory / f"{split}.npz"
-        print(f"Writing and fingerprinting {split} archive", flush=True)
-        np.savez(path, **arrays)
-        metadata["splits"][split] = {
-            "count": len(arrays["tokens"]),
-            "content_sha256": array_hash(arrays),
-            "file_sha256": file_hash(path),
-            "unique_prompts": len(set(arrays["prompt_hashes"])),
-            "clipping": clipping_summary(arrays),
-        }
-        print(f"Finished {split}: {path.stat().st_size:,} bytes", flush=True)
+        metadata["splits"][split] = save_split(directory, split, arrays)
     save_codec(directory)
     write_json(directory / "metadata.json", metadata)
     return metadata

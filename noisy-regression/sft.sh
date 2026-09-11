@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Canonical defaults; sweeps override only effective batch size or peak LR.
 source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
+CANONICAL_DATA_DIR="${DATA_DIR}"
 RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # --resume requires a new output directory or run name.
@@ -34,10 +35,11 @@ NUM_HIDDEN_LAYERS=4
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--batch-size|--micro-batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
+    --gpu-id|--data-dir|--batch-size|--micro-batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
+        --data-dir) DATA_DIR="$2" ;;
         --batch-size) BATCH_SIZE="$2" ;;
         --micro-batch-size) MICRO_BATCH_SIZE="$2" ;;
         --num-hidden-layers) NUM_HIDDEN_LAYERS="$2" ;;
@@ -57,6 +59,9 @@ while (( $# )); do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+if [[ "${DATA_DIR}" != "${CANONICAL_DATA_DIR}" && -z "${RUN_NAME}" ]]; then
+  echo "An alternate dataset requires --run-name to identify the dataset variant." >&2; exit 2;
+fi
 [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "Batch size must be a positive integer." >&2; exit 2; }
 if [[ -z "${MICRO_BATCH_SIZE}" ]]; then
   MICRO_BATCH_SIZE=$(( BATCH_SIZE < 1024 ? BATCH_SIZE : 1024 ))

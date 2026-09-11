@@ -9,7 +9,7 @@ GitHub, then pull on the server before preparing data, validating or training.
 | --- | --- |
 | Frozen training / held-out evaluation pool | 10,000,000 / 1,024 examples |
 | Dimension / context observations | 2 / 64 |
-| Context and query noise standard deviation | 0.001 |
+| Context and query noise standard deviation | 0.1 |
 | Numerical codec | 256 inclusive centers on [-4,4]; two base-16 digits per scalar |
 | Model | Scratch Qwen2, 4 layers, hidden 128, MLP 512; 988,288 parameters |
 | Effective batch / microbatch | 1,024 / 1,024 (one forward/backward pass) |
@@ -56,8 +56,8 @@ a full-vocabulary EOS NLL. Numerical answer metrics exclude the EOS loss.
 The codec rounds to the nearest center, breaks midpoint ties toward the
 larger index, clips tails to endpoints and rejects nonfinite inputs.
 A digit pair `(a,b)` decodes to `-4 + (16*a+b)*8/255`. The spacing, approximately
-0.03137, is substantially larger than sigma=0.001; tokenization hides most
-noise realizations. The wider range reduces clipping but makes bins coarser
+0.03137, is smaller than sigma=0.1, so the observation noise spans several
+quantization bins. The wider range reduces clipping but makes bins coarser
 than the preceding [-3,3] codec. Metadata records actual clipping fractions.
 
 Qwen2 uses four query heads, two KV heads, capacity 1,024, RoPE theta 1,000,000,
@@ -107,17 +107,41 @@ validation are CPU-only. Each dataset/output directory must be new. The
 standalone canonical command and the sweep's GPU 2 job target the same output;
 launch one or the other.
 
+## 1M training-pool comparison
+
+The canonical default remains 10M examples. To create a nested 1M comparison
+pool, sample complete examples uniformly without replacement and retain the
+same held-out evaluation archive:
+
+```bash
+source noisy-regression/config.sh
+ONE_M_DATA="${REPO_ROOT}/noisy-regression/data/subset_d2_n64_1m_sep_eoo_range4_sigma0p001"
+CUDA_VISIBLE_DEVICES="" PYTHONPATH="${REPO_ROOT}/noisy-regression:${REPO_ROOT}" \
+  "${VENV_DIR}/bin/python" -m noisy_regression.curate \
+  --source "${DATA_DIR}" --output "${ONE_M_DATA}" --train-count 1000000
+bash noisy-regression/sft.sh --gpu-id 2 --data-dir "${ONE_M_DATA}" \
+  --run-name canonical_d2_n64_1m_subset_sep_eoo_range4_sigma0p001_bs1024_lr1e-4
+```
+
+Curation verifies the source pool, preserves each selected problem's IDs,
+latents, noise and tokens, saves the source indices and provenance hashes, and
+copies `eval.npz` byte for byte. Output directories must be new. An alternate
+`--data-dir` requires an explicit `--run-name` to distinguish the dataset variant.
+Training starts from scratch with the same batch/microbatch 1024, LR 1e-4,
+200-step warmup and 20K-step horizon. This gives **20.48 pool passes**, compared
+with **2.048** for the 10M pool.
+
 ## Evaluation and artifacts
 
 `config.sh` holds the shared dataset and run identity. Canonical data lives in
-`noisy-regression/data/fixed_d2_n64_10m_sep_eoo_range4_sigma0p001/`:
+`noisy-regression/data/fixed_d2_n64_10m_sep_eoo_range4_sigma0p1/`:
 uncompressed `train.npz`, `eval.npz`, `metadata.json` and `codec.json`.
 Schema **6** rejects legacy pools. Metadata includes SHA-256 file/content
 hashes, clipping and a train/eval prompt-overlap audit. Loading verifies hashes
 and codec settings before training.
 
 Outputs live under `noisy-regression/checkpoints/` with names
-`canonical_d2_n64_10m_sep_eoo_range4_sigma0p001_bsBATCH_lrRATE/`. They include
+`canonical_d2_n64_10m_sep_eoo_range4_sigma0p1_bsBATCH_lrRATE/`. They include
 configuration, dataset fingerprints, Git commit, W&B link, metrics, per-prompt
 distributions, checkpoints and a final report. Sweep logs and its run table
 live in `noisy-regression/logs/SWEEP_NAME/`.
