@@ -118,6 +118,37 @@ validation are CPU-only. Each dataset/output directory must be new. The
 standalone canonical command and the sweep's GPU 2 job target the same output;
 launch one or the other.
 
+## Context and noise cross product
+
+Generate four independent frozen d=2 pools and train each from scratch:
+
+```bash
+nohup bash noisy-regression/sweep_context_noise.sh context_noise_20260912 > noisy-regression/context_noise_launch.log 2>&1 < /dev/null &
+```
+
+| GPU | Context observations | Sigma | Complete sequence tokens |
+| --- | ---: | ---: | ---: |
+| 0 | 16 | 0.001 | 172 |
+| 1 | 16 | 0.25 | 172 |
+| 2 | 32 | 0.001 | 332 |
+| 3 | 32 | 0.25 | 332 |
+
+Each pool contains 10M training and 1,024 held-out examples. CPU preparation
+runs in parallel; each successful preparation launches `sft.sh` on its assigned
+GPU with the canonical batch/microbatch 1,024, LR 1e-4, 200-step warmup and
+20K-step horizon. Every run makes 20.48M presentations (2.048 pool passes).
+The launcher checks GPUs before preparation and `sft.sh` checks again before
+training; a newly occupied GPU causes that pipeline to fail instead of sharing.
+Dataset, checkpoint and sweep-log directories must be new.
+
+The run table, preparation/training logs, per-GPU phase and exit-code files
+are under `noisy-regression/logs/SWEEP_NAME/`; W&B groups all four runs by that
+name. Datasets, evaluation pools, initialization and shuffling are independent
+across conditions, so this is an unpaired single-run comparison. The codec
+spacing (~0.0314) exceeds sigma=0.001, making quantization important in that
+condition. Dataset validation accepts positive integer context lengths that
+fit the configured capacity; the standalone canonical default remains n=64.
+
 ## 1M training-pool comparison
 
 The canonical default remains 10M examples. To create a nested 1M comparison

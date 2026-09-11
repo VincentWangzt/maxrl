@@ -257,13 +257,17 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
 
 
 @pytest.mark.parametrize(
-    "dimension,capacity,prompt_length,sequence_length",
-    [(3, 1024, 844, 847), (4, 1042, 1039, 1042)],
+    "dimension,observations,capacity,prompt_length,sequence_length",
+    [(2, 16, 1024, 169, 172), (2, 32, 1024, 329, 332), (3, 64, 1024, 844, 847), (4, 64, 1042, 1039, 1042)],
 )
-def test_dimension_specific_prompt_layout(tmp_path, dimension, capacity, prompt_length, sequence_length):
-    config = DatasetConfig(train_count=3, eval_count=2, dimension=dimension, capacity=capacity)
+def test_dimension_and_context_specific_prompt_layout(
+    tmp_path, dimension, observations, capacity, prompt_length, sequence_length
+):
+    config = DatasetConfig(
+        train_count=3, eval_count=2, dimension=dimension, observations=observations, capacity=capacity
+    )
     config.validate()
-    layout = sequence_layout(dimension, OBSERVATIONS)
+    layout = sequence_layout(dimension, observations)
     assert layout.prompt_length == prompt_length and layout.sequence_length == sequence_length
     arrays = generate_split(config, "train")
     tokens = arrays["tokens"]
@@ -271,7 +275,7 @@ def test_dimension_specific_prompt_layout(tmp_path, dimension, capacity, prompt_
     assert (tokens[:, layout.query_offset] == QUERY).all()
     assert (tokens[:, layout.prompt_length - 1] == Y).all()
     assert (tokens[:, -1] == EOS).all()
-    for observation in range(OBSERVATIONS):
+    for observation in range(observations):
         block = tokens[
             :,
             1 + observation * layout.observation_tokens : 1 + (observation + 1) * layout.observation_tokens,
@@ -700,13 +704,14 @@ def test_optional_gradient_clip_configuration():
             parse_max_grad_norm(str(norm))
 
 
-def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("observations,sigma", [(64, 0.001), (16, 0.001), (16, 0.25), (32, 0.001), (32, 0.25)])
+def test_cpu_end_to_end_frozen_evaluation_and_artifacts(tmp_path, monkeypatch, observations, sigma):
     def reject_sampling(*args, **kwargs):
         raise AssertionError("Exact evaluation must not sample completions")
 
     monkeypatch.setattr(torch, "multinomial", reject_sampling)
     pool = tmp_path / "data"
-    prepare(pool, DatasetConfig(train_count=8, eval_count=4))
+    prepare(pool, DatasetConfig(train_count=8, eval_count=4, observations=observations, sigma=sigma))
     config = TrainConfig(
         batch_size=4,
         micro_batch_size=2,

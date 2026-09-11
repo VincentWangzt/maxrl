@@ -31,8 +31,6 @@ class DatasetConfig:
 
     def validate(self):
         layout = sequence_layout(self.dimension, self.observations)
-        if self.observations != OBSERVATIONS:
-            raise ValueError(f"This experiment requires n={OBSERVATIONS} observations")
         if not isinstance(self.capacity, int) or self.capacity < layout.sequence_length:
             raise ValueError(
                 f"Capacity must be an integer >= sequence length {layout.sequence_length} for "
@@ -170,7 +168,7 @@ def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
     if metadata["schema_version"] != 6:
-        raise ValueError("Dataset schema mismatch: prepare a new n=64 SEP/EOO pool with the [-4,4] codec")
+        raise ValueError("Dataset schema mismatch: prepare a new SEP/EOO pool with the [-4,4] codec")
     config = DatasetConfig(**metadata["config"])
     config.validate()
     expected_codec = codec_config(config.dimension, config.observations)
