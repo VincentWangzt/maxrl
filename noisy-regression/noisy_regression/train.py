@@ -28,7 +28,7 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 @dataclass(frozen=True)
 class TrainConfig:
     batch_size: int = 1024
-    micro_batch_size: int | None = None  # None resolves to the effective batch size.
+    micro_batch_size: int | None = None  # Default: min(1024, effective batch size).
     max_steps: int = 20_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
@@ -49,7 +49,7 @@ class TrainConfig:
 
     def __post_init__(self):
         if self.micro_batch_size is None:
-            object.__setattr__(self, "micro_batch_size", self.batch_size)
+            object.__setattr__(self, "micro_batch_size", min(1024, self.batch_size))
 
     def validate(self, splits):
         integers = (
@@ -216,8 +216,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     output_path = Path(output_path).resolve()
     output_path.mkdir(parents=True, exist_ok=False)
     model = create_model(model_config).to(device)
-    # Full-batch training (including 2,048 examples) must fit on a single L40.
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     optimizer, decay_groups = make_optimizer(
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
@@ -292,7 +290,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "training": asdict(config),
         "architecture": asdict(model_config),
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
-        "activation_checkpointing": {"enabled": True, "use_reentrant": False},
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
         "training_objective": "two constrained digit NLLs plus full-vocabulary EOS NLL",
@@ -339,7 +336,6 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                     for name in (
                         "architecture",
                         "parameter_count",
-                        "activation_checkpointing",
                         "optimizer_parameter_groups",
                         "versions",
                         "git_commit",

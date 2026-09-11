@@ -13,7 +13,6 @@ GitHub, then pull on the server before preparing data, validating or training.
 | Numerical codec | 256 inclusive centers on [-4,4]; two base-16 digits per scalar |
 | Model | Scratch Qwen2, 4 layers, hidden 128, MLP 512; 988,288 parameters |
 | Effective batch / microbatch | 1,024 / 1,024 (one forward/backward pass) |
-| Activation checkpointing | Enabled per transformer layer; non-reentrant |
 | Optimizer steps | 20,000 |
 | Learning rate | 1e-4 |
 | Warmup | 200 updates, from 10% to 100% of the learning rate |
@@ -90,10 +89,11 @@ The sweep calls the same `sft.sh` for all five runs:
 | 8 | 1,024 | 5e-5 | 5e-6 | 20,480,000 / 2.048 |
 | 9 | 1,024 | 2e-4 | 2e-5 | 20,480,000 / 2.048 |
 
-Microbatch size defaults to the effective batch size, including batch overrides:
-512, 1,024 or 2,048. Every update uses one forward/backward pass.
-All runs use activation checkpointing to fit full batches on the L40: intermediate
-activations are recomputed during backward instead of retained for every layer.
+Microbatch defaults to `min(1024, effective batch size)`: batch 512 uses 512,
+batch 1024 uses 1024, and batch 2048 uses two microbatches of 1024. Override it
+with `--micro-batch-size` when needed; it must divide the effective batch.
+Activation checkpointing is disabled.
+
 Every run uses the same frozen pools and 20,000 updates. The batch comparison
 changes both gradient batch size and total presentations. Independent
 initialization and shuffling also contribute variation; this is a single-run

@@ -442,12 +442,14 @@ def test_sampled_mean_mse_averages_predictions_before_squaring():
         sampled_mean_mse(completions, signals)
 
 
-@pytest.mark.parametrize("batch_size", [512, 1024, 2048])
-def test_microbatch_defaults_to_effective_batch(batch_size):
+@pytest.mark.parametrize("batch_size,expected", [(4, 4), (512, 512), (1024, 1024), (2048, 1024)])
+def test_microbatch_defaults_to_capped_effective_batch(batch_size, expected):
     config = TrainConfig(batch_size=batch_size)
     config.validate({})
-    assert config.micro_batch_size == batch_size
-    assert TrainConfig(batch_size=batch_size, micro_batch_size=128).micro_batch_size == 128
+    assert config.micro_batch_size == expected
+    explicit = TrainConfig(batch_size=batch_size, micro_batch_size=2)
+    explicit.validate({})
+    assert explicit.micro_batch_size == 2
 
 
 @pytest.mark.parametrize("learning_rate", [5e-5, 1e-4, 2e-4])
@@ -532,6 +534,8 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     )
     np.testing.assert_array_equal(full_batch_indices, expected_indices)
     assert full_batch_metrics == pytest.approx(expected_metrics, rel=1e-4, abs=1e-7)
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, expected_weights[name], rtol=1e-4, atol=1e-7)
     with pytest.raises(ValueError, match="same training configuration"):
         load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, batch_size=8), {})
     with pytest.raises(ValueError, match="only max_steps may be increased"):
@@ -754,7 +758,6 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
-    assert init_arguments["config"]["activation_checkpointing"] == {"enabled": True, "use_reentrant": False}
     assert init_arguments["config"]["max_grad_norm"] == max_grad_norm
     assert json.loads((tmp_path / "run" / "manifest.json").read_text())["training"]["max_grad_norm"] == max_grad_norm
     assert init_arguments["config"]["dashboard_schema_version"] == 5

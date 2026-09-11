@@ -11,6 +11,7 @@ ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
 BATCH_SIZE=1024
+MICRO_BATCH_SIZE="" # Default resolves after batch-size overrides: min(1024, batch size).
 MAX_STEPS=20000
 EVAL_INTERVAL=500
 LEARNING_RATE=1e-4
@@ -33,11 +34,12 @@ NUM_HIDDEN_LAYERS=4
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
+    --gpu-id|--batch-size|--micro-batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
         --batch-size) BATCH_SIZE="$2" ;;
+        --micro-batch-size) MICRO_BATCH_SIZE="$2" ;;
         --num-hidden-layers) NUM_HIDDEN_LAYERS="$2" ;;
         --max-steps) MAX_STEPS="$2" ;;
         --learning-rate) LEARNING_RATE="$2" ;;
@@ -55,8 +57,13 @@ while (( $# )); do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-# Resolve after CLI overrides so every sweep uses one full-batch backward pass.
-MICRO_BATCH_SIZE="${BATCH_SIZE}"
+[[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "Batch size must be a positive integer." >&2; exit 2; }
+if [[ -z "${MICRO_BATCH_SIZE}" ]]; then
+  MICRO_BATCH_SIZE=$(( BATCH_SIZE < 1024 ? BATCH_SIZE : 1024 ))
+fi
+[[ "${MICRO_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] && (( BATCH_SIZE % MICRO_BATCH_SIZE == 0 )) || {
+  echo "Microbatch size must be a positive divisor of batch size." >&2; exit 2;
+}
 [[ "${NUM_HIDDEN_LAYERS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "Number of hidden layers must be a positive integer." >&2; exit 2;
 }
