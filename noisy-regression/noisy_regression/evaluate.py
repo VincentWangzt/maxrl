@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM
 
-from noisy_regression.codec import CONTEXT_SLICE, PROMPT_LENGTH
+from noisy_regression.codec import sequence_layout
 from noisy_regression.data import load_pool, subset, write_json
 from noisy_regression.metrics import distribution_summary, mean_se
 from noisy_regression.model import conditional_log_probs, joint_log_probs, teacher_forced_nll
@@ -76,7 +76,7 @@ def evaluate(
     log_prob_parts = []
     for start in range(0, len(arrays["tokens"]), eval_batch_size):
         prompt = torch.tensor(
-            arrays["tokens"][start : start + eval_batch_size, :PROMPT_LENGTH].astype(np.int64), device=device
+            arrays["tokens"][start : start + eval_batch_size, :-3].astype(np.int64), device=device
         )
         with precision_context(device, precision):
             first, second = conditional_log_probs(model, prompt)
@@ -106,6 +106,8 @@ def main():
     torch.use_deterministic_algorithms(True)
     device = select_device(args.device, args.precision)
     splits, metadata = load_pool(args.data)
+    dataset_config = metadata["config"]
+    layout = sequence_layout(dataset_config["dimension"], dataset_config["observations"])
     saved_metadata = json.loads((args.checkpoint / "dataset_metadata.json").read_text())
     if metadata != saved_metadata:
         raise ValueError("Checkpoint and dataset metadata differ")
@@ -123,7 +125,9 @@ def main():
     )
     # A context mismatch control preserves every query and its stored target.
     shuffled = subset(splits["eval"], np.arange(len(splits["eval"]["tokens"])))
-    shuffled["tokens"][:, CONTEXT_SLICE] = np.roll(shuffled["tokens"][:, CONTEXT_SLICE], 1, axis=0)
+    shuffled["tokens"][:, layout.context_slice] = np.roll(
+        shuffled["tokens"][:, layout.context_slice], 1, axis=0
+    )
     report["mismatched_context_control"] = likelihood(
         model, shuffled["tokens"], args.eval_batch_size, device, args.precision
     )

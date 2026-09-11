@@ -43,7 +43,8 @@ def curate(source, output, train_count):
     shutil.copyfile(source / "eval.npz", output / "eval.npz")
     if file_hash(output / "eval.npz") != metadata["splits"]["eval"]["file_sha256"]:
         raise ValueError("Copied evaluation archive does not match the verified source")
-    save_codec(output)
+    config = metadata["config"]
+    save_codec(output, config["dimension"], config["observations"])
     write_json(output / "metadata.json", metadata)
     print(f"Finished curated pool: {output}", flush=True)
     return metadata

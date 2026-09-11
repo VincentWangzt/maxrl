@@ -11,12 +11,12 @@ import numpy as np
 from noisy_regression.codec import (
     DIMENSION,
     OBSERVATIONS,
-    PROMPT_LENGTH,
     RANGE_MAX,
     RANGE_MIN,
     build_sequences,
     codec_config,
     save_codec,
+    sequence_layout,
 )
 
 
@@ -30,8 +30,14 @@ class DatasetConfig:
     capacity: int = 1024
 
     def validate(self):
-        if (self.dimension, self.observations, self.capacity) != (DIMENSION, OBSERVATIONS, 1024):
-            raise ValueError(f"This experiment requires d={DIMENSION}, n={OBSERVATIONS}, capacity=1024")
+        layout = sequence_layout(self.dimension, self.observations)
+        if self.observations != OBSERVATIONS:
+            raise ValueError(f"This experiment requires n={OBSERVATIONS} observations")
+        if not isinstance(self.capacity, int) or self.capacity < layout.sequence_length:
+            raise ValueError(
+                f"Capacity must be an integer >= sequence length {layout.sequence_length} for "
+                f"d={self.dimension}, n={self.observations}"
+            )
         if not np.isfinite(self.sigma) or self.sigma <= 0:
             raise ValueError("Require finite sigma > 0 for both context and query noise")
         if min(self.train_count, self.eval_count) < 1:
@@ -61,6 +67,7 @@ def array_hash(arrays):
 
 def generate_split(config, split):
     config.validate()
+    layout = sequence_layout(config.dimension, config.observations)
     if split not in ("train", "eval"):
         raise ValueError("Only train and held-out eval splits exist")
     count = config.train_count if split == "train" else config.eval_count
@@ -86,7 +93,8 @@ def generate_split(config, split):
     arrays["tokens"] = build_sequences(context_x, context_y, query_x, query_y, config.capacity)
     arrays["ids"] = np.array([f"{split}-{i:08d}" for i in range(count)])
     arrays["prompt_hashes"] = np.array(
-        [hashlib.sha256(row[:PROMPT_LENGTH].tobytes()).hexdigest() for row in arrays["tokens"]], dtype="S64"
+        [hashlib.sha256(row[: layout.prompt_length].tobytes()).hexdigest() for row in arrays["tokens"]],
+        dtype="S64",
     )
     return arrays
 
@@ -124,6 +132,10 @@ def prepare(directory, config):
     config.validate()
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
+    context_coordinates = " [SEP] ".join(f"x_{index}" for index in range(1, config.dimension + 1))
+    query_coordinates = " [SEP] ".join(
+        f"query_x_{index}" for index in range(1, config.dimension + 1)
+    )
     splits = {}
     for split in ("train", "eval"):
         print(f"Generating {split} pool with fresh random draws", flush=True)
@@ -135,12 +147,12 @@ def prepare(directory, config):
     metadata = {
         "schema_version": 6,
         "config": asdict(config),
-        "codec": codec_config(),
+        "codec": codec_config(config.dimension, config.observations),
         "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
         "storage": "uncompressed npz",
         "prompt_format": (
-            f"[BOS] ([X] x_1 [SEP] x_2 [Y] y [EOO]) * {config.observations} "
-            "[QUERY] [X] query_x_1 [SEP] query_x_2 [Y] answer [EOS]"
+            f"[BOS] ([X] {context_coordinates} [Y] y [EOO]) * {config.observations} "
+            f"[QUERY] [X] {query_coordinates} [Y] answer [EOS]"
         ),
         "numpy_version": np.__version__,
         "split_prompt_overlap": 0,
@@ -149,7 +161,7 @@ def prepare(directory, config):
     }
     for split, arrays in splits.items():
         metadata["splits"][split] = save_split(directory, split, arrays)
-    save_codec(directory)
+    save_codec(directory, config.dimension, config.observations)
     write_json(directory / "metadata.json", metadata)
     return metadata
 
@@ -158,10 +170,12 @@ def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
     if metadata["schema_version"] != 6:
-        raise ValueError("Dataset schema mismatch: prepare a new d=2, n=64 SEP/EOO pool with the [-4,4] codec")
-    if metadata["codec"] != codec_config() or json.loads((directory / "codec.json").read_text()) != codec_config():
+        raise ValueError("Dataset schema mismatch: prepare a new n=64 SEP/EOO pool with the [-4,4] codec")
+    config = DatasetConfig(**metadata["config"])
+    config.validate()
+    expected_codec = codec_config(config.dimension, config.observations)
+    if metadata["codec"] != expected_codec or json.loads((directory / "codec.json").read_text()) != expected_codec:
         raise ValueError("Dataset codec mismatch: scalar range and prompt layout must match the running code")
-    DatasetConfig(**metadata["config"]).validate()
     splits = {}
     for split in ("train", "eval"):
         path = directory / f"{split}.npz"

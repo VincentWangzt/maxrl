@@ -34,6 +34,7 @@ from noisy_regression.codec import (
     decode,
     encode,
     quantize,
+    sequence_layout,
 )
 from noisy_regression.curate import curate
 from noisy_regression.data import (
@@ -253,8 +254,50 @@ def test_prompt_layout_and_no_latent_leakage(arrays):
         build_sequences(
             arrays["context_x"], arrays["context_y"], arrays["query_x"], arrays["query_y"], SEQUENCE_LENGTH - 1
         )
-    with pytest.raises(ValueError, match="d=2"):
-        DatasetConfig(dimension=1).validate()
+
+
+@pytest.mark.parametrize(
+    "dimension,capacity,prompt_length,sequence_length",
+    [(3, 1024, 844, 847), (4, 1042, 1039, 1042)],
+)
+def test_dimension_specific_prompt_layout(tmp_path, dimension, capacity, prompt_length, sequence_length):
+    config = DatasetConfig(train_count=3, eval_count=2, dimension=dimension, capacity=capacity)
+    config.validate()
+    layout = sequence_layout(dimension, OBSERVATIONS)
+    assert layout.prompt_length == prompt_length and layout.sequence_length == sequence_length
+    arrays = generate_split(config, "train")
+    tokens = arrays["tokens"]
+    assert tokens.shape == (3, sequence_length)
+    assert (tokens[:, layout.query_offset] == QUERY).all()
+    assert (tokens[:, layout.prompt_length - 1] == Y).all()
+    assert (tokens[:, -1] == EOS).all()
+    for observation in range(OBSERVATIONS):
+        block = tokens[
+            :,
+            1 + observation * layout.observation_tokens : 1 + (observation + 1) * layout.observation_tokens,
+        ]
+        position = 1
+        for coordinate in range(dimension):
+            np.testing.assert_array_equal(
+                block[:, position : position + 2], encode(arrays["context_x"][:, observation, coordinate])
+            )
+            position += 2
+            if coordinate + 1 < dimension:
+                assert (block[:, position] == SEP).all()
+                position += 1
+        assert (block[:, position] == Y).all() and (block[:, -1] == EOO).all()
+    labels = answer_labels(torch.tensor(tokens.astype(np.int64)))
+    assert (labels[:, :-3] == -100).all()
+    assert torch.equal(labels[:, -3:], torch.tensor(tokens[:, -3:].astype(np.int64)))
+    with pytest.raises(ValueError, match="Capacity"):
+        replace(config, capacity=sequence_length - 1).validate()
+    directory = tmp_path / f"d{dimension}"
+    metadata = prepare(directory, config)
+    loaded, loaded_metadata = load_pool(directory)
+    assert loaded_metadata == metadata
+    assert metadata["codec"]["prompt_length"] == prompt_length
+    assert metadata["codec"]["sequence_length"] == sequence_length
+    assert loaded["train"]["tokens"].shape == (3, sequence_length)
 
 
 def test_shared_noise_setting_preserves_latents_and_matches_bayesian_covariance(monkeypatch):
@@ -366,7 +409,7 @@ def test_qwen_forward_backward_causality_and_cached_conditionals(arrays):
     torch.testing.assert_close(
         original_logits[:, : PROMPT_LENGTH + 1], modified_logits[:, : PROMPT_LENGTH + 1], rtol=0, atol=0
     )
-    with pytest.raises(ValueError, match=f"{PROMPT_LENGTH}-token"):
+    with pytest.raises(ValueError, match="prompts"):
         conditional_log_probs(model, tokens)
 
 
@@ -542,10 +585,11 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     assert first_metrics["learning_rate"] == pytest.approx(config.learning_rate * config.warmup_start_factor)
     assert first_indices.shape == (config.batch_size,)
     checkpoint = tmp_path / "checkpoint"
-    save_checkpoint(checkpoint, model, optimizer, scheduler, order, 1, config, {}, {}, 0, {})
+    dataset_metadata = {"config": asdict(DatasetConfig(train_count=8, eval_count=4))}
+    save_checkpoint(checkpoint, model, optimizer, scheduler, order, 1, config, dataset_metadata, {}, 0, {})
     expected_metrics, expected_indices = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     expected_weights = {name: value.clone() for name, value in model.state_dict().items()}
-    restored_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, config, {})
+    restored_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, config, dataset_metadata)
     assert "train_evaluation_indices" not in restored_state
     actual_metrics, actual_indices = optimize_step(model, optimizer, scheduler, order, arrays["tokens"], config, device)
     assert actual_metrics == expected_metrics
@@ -554,12 +598,16 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, expected_weights[name], atol=0, rtol=0)
     with pytest.raises(ValueError, match="configuration"):
-        load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, learning_rate=1e-3), {})
+        load_checkpoint(
+            checkpoint, model, optimizer, scheduler, order, replace(config, learning_rate=1e-3), dataset_metadata
+        )
     extended = replace(config, max_steps=4)
-    extended_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, extended, {})
+    extended_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, extended, dataset_metadata)
     assert extended_state["checkpoint_training_config"] == asdict(config)
     full_batch_config = replace(config, micro_batch_size=config.batch_size)
-    full_batch_state = load_checkpoint(checkpoint, model, optimizer, scheduler, order, full_batch_config, {})
+    full_batch_state = load_checkpoint(
+        checkpoint, model, optimizer, scheduler, order, full_batch_config, dataset_metadata
+    )
     assert full_batch_state["checkpoint_training_config"] == asdict(config)
     full_batch_metrics, full_batch_indices = optimize_step(
         model, optimizer, scheduler, order, arrays["tokens"], full_batch_config, device
@@ -569,9 +617,13 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path, arrays):
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, expected_weights[name], rtol=1e-4, atol=1e-7)
     with pytest.raises(ValueError, match="same training configuration"):
-        load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, batch_size=8), {})
+        load_checkpoint(
+            checkpoint, model, optimizer, scheduler, order, replace(config, batch_size=8), dataset_metadata
+        )
     with pytest.raises(ValueError, match="only max_steps may be increased"):
-        load_checkpoint(checkpoint, model, optimizer, scheduler, order, replace(config, max_steps=2), {})
+        load_checkpoint(
+            checkpoint, model, optimizer, scheduler, order, replace(config, max_steps=2), dataset_metadata
+        )
 
 
 def test_extended_cosine_scheduler_retargets_the_next_update():

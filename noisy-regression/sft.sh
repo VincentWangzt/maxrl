@@ -31,11 +31,12 @@ LOG_INTERVAL=10
 USE_WANDB=true
 PROJECT_NAME="noisy-regression-sft"
 NUM_HIDDEN_LAYERS=4
+MAX_POSITION_EMBEDDINGS=1024
 
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--data-dir|--batch-size|--micro-batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
+    --gpu-id|--data-dir|--batch-size|--micro-batch-size|--num-hidden-layers|--max-position-embeddings|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir|--resume)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
@@ -43,6 +44,7 @@ while (( $# )); do
         --batch-size) BATCH_SIZE="$2" ;;
         --micro-batch-size) MICRO_BATCH_SIZE="$2" ;;
         --num-hidden-layers) NUM_HIDDEN_LAYERS="$2" ;;
+        --max-position-embeddings) MAX_POSITION_EMBEDDINGS="$2" ;;
         --max-steps) MAX_STEPS="$2" ;;
         --learning-rate) LEARNING_RATE="$2" ;;
         --min-learning-rate) MIN_LEARNING_RATE="$2" ;;
@@ -72,10 +74,13 @@ fi
 [[ "${NUM_HIDDEN_LAYERS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "Number of hidden layers must be a positive integer." >&2; exit 2;
 }
+[[ "${MAX_POSITION_EMBEDDINGS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "Maximum position embeddings must be a positive integer." >&2; exit 2;
+}
 MODEL_CONFIG_JSON='{
   "vocab_size": 24, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
-  "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
+  "max_position_embeddings": '"${MAX_POSITION_EMBEDDINGS}"', "hidden_act": "silu", "rms_norm_eps": 1e-6,
   "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
   "use_sliding_window": false, "sliding_window": null,
   "bos_token_id": 22, "pad_token_id": 21, "eos_token_id": 23

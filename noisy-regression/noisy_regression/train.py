@@ -17,7 +17,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM
 
-from noisy_regression.codec import CONTEXT_SLICE, save_codec
+from noisy_regression.codec import save_codec, sequence_layout
 from noisy_regression.data import DatasetConfig, FrozenOrder, load_pool, subset, write_json
 from noisy_regression.evaluate import evaluate, likelihood, precision_context, select_device
 from noisy_regression.model import ModelConfig, create_model, make_optimizer, make_scheduler, teacher_forced_nll
@@ -103,7 +103,8 @@ def save_checkpoint(path, model, optimizer, scheduler, order, step, config, meta
     temporary = path.with_name(path.name + ".incomplete")
     temporary.mkdir(parents=True, exist_ok=False)
     model.save_pretrained(temporary)
-    save_codec(temporary)
+    dataset_config = metadata["config"]
+    save_codec(temporary, dataset_config["dimension"], dataset_config["observations"])
     write_json(temporary / "training_config.json", asdict(config))
     write_json(temporary / "dataset_metadata.json", metadata)
     write_json(temporary / "metrics.json", metrics)
@@ -212,7 +213,14 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     device = select_device(config.device, config.precision)
     print(f"Loading and verifying frozen pool: {data_path}", flush=True)
     splits, metadata = load_pool(data_path)
+    dataset_config = DatasetConfig(**metadata["config"])
+    layout = sequence_layout(dataset_config.dimension, dataset_config.observations)
     config.validate(splits)
+    if model_config.max_position_embeddings < layout.sequence_length:
+        raise ValueError(
+            f"Model context {model_config.max_position_embeddings} is shorter than dataset sequence "
+            f"length {layout.sequence_length}; truncation is forbidden"
+        )
     output_path = Path(output_path).resolve()
     output_path.mkdir(parents=True, exist_ok=False)
     model = create_model(model_config).to(device)
@@ -318,9 +326,9 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     }
     write_json(output_path / "manifest.json", manifest)
     write_json(output_path / "dataset_metadata.json", metadata)
-    references = reference_report(splits["eval"], DatasetConfig(**metadata["config"]))
+    references = reference_report(splits["eval"], dataset_config)
     write_json(output_path / "references.json", references)
-    save_codec(output_path)
+    save_codec(output_path, dataset_config.dimension, dataset_config.observations)
     metrics_path = output_path / "metrics.jsonl"
     tracker = None
     if tracking_config is not None:
@@ -400,7 +408,9 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
             metrics["train_batch_ids"] = train_batch["ids"].tolist()
         if final:
             control_tokens = splits["eval"]["tokens"].copy()
-            control_tokens[:, CONTEXT_SLICE] = np.roll(control_tokens[:, CONTEXT_SLICE], 1, axis=0)
+            control_tokens[:, layout.context_slice] = np.roll(
+                control_tokens[:, layout.context_slice], 1, axis=0
+            )
             metrics["eval"]["mismatched_context_control"] = likelihood(
                 model, control_tokens, config.eval_batch_size, device, config.precision
             )

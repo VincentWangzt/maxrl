@@ -13,10 +13,7 @@ from noisy_regression.codec import (
     DIGITS,
     EOS,
     PAD,
-    PROMPT_LENGTH,
     QUERY,
-    QUERY_OFFSET,
-    SEQUENCE_LENGTH,
     VOCAB,
     X,
     Y,
@@ -50,38 +47,51 @@ def create_model(config):
     return AutoModelForCausalLM.from_config(hf_config, attn_implementation="sdpa")
 
 
+def has_valid_query_marker(tokens):
+    query_mask = tokens == QUERY
+    if tokens.ndim != 2 or not torch.all(query_mask.sum(dim=1) == 1):
+        return False
+    positions = query_mask.to(torch.int64).argmax(dim=1)
+    if torch.any(positions + 1 >= tokens.shape[1]):
+        return False
+    rows = torch.arange(len(tokens), device=tokens.device)
+    return bool(torch.all(tokens[rows, positions + 1] == X))
+
+
 def answer_labels(tokens):
     if (
         tokens.ndim != 2
-        or tokens.shape[1] != SEQUENCE_LENGTH
-        or not torch.all(tokens[:, QUERY_OFFSET] == QUERY)
-        or not torch.all(tokens[:, QUERY_OFFSET + 1] == X)
-        or not torch.all(tokens[:, PROMPT_LENGTH - 1] == Y)
+        or tokens.shape[1] < 4
+        or not torch.all(tokens[:, 0] == BOS)
+        or not has_valid_query_marker(tokens)
+        or not torch.all(tokens[:, -4] == Y)
         or not torch.all(tokens[:, -1] == EOS)
     ):
         raise ValueError(
-            f"Expected complete {SEQUENCE_LENGTH}-token examples ending in "
-            "[QUERY] [X] a b [SEP] c d [Y] e f [EOS]"
+            "Expected complete examples with one [QUERY] [X], beginning with [BOS], "
+            "and ending in [Y] digit digit [EOS]"
         )
-    if torch.any((tokens[:, PROMPT_LENGTH : PROMPT_LENGTH + 2] < 0) | (tokens[:, PROMPT_LENGTH : PROMPT_LENGTH + 2] >= DIGITS)):
+    if torch.any((tokens[:, -3:-1] < 0) | (tokens[:, -3:-1] >= DIGITS)):
         raise ValueError("Targets must be digit pairs")
     labels = torch.full_like(tokens, -100)
-    labels[:, PROMPT_LENGTH:] = tokens[:, PROMPT_LENGTH:]
+    labels[:, -3:] = tokens[:, -3:]
     return labels
 
 
 def answer_nll_from_logits(logits, tokens):
     labels = answer_labels(tokens)
+    if logits.ndim != 3 or logits.shape[:2] != tokens.shape:
+        raise ValueError("Logits and tokens must share batch and sequence dimensions")
     # Do not pass labels into HF, which would shift internally and normalize
     # digit predictions over all vocabulary entries. The two digit shifts use
     # a constrained 16-way CE; termination uses the full vocabulary.
-    selected = logits[:, PROMPT_LENGTH - 1 : PROMPT_LENGTH + 1, :DIGITS].float()
+    selected = logits[:, -4:-2, :DIGITS].float()
     digit_nll = F.cross_entropy(
         selected.reshape(-1, DIGITS),
-        labels[:, PROMPT_LENGTH : PROMPT_LENGTH + 2].reshape(-1),
+        labels[:, -3:-1].reshape(-1),
         reduction="none",
     ).reshape(-1, 2)
-    eos_nll = F.cross_entropy(logits[:, PROMPT_LENGTH + 1].float(), labels[:, -1], reduction="none")
+    eos_nll = F.cross_entropy(logits[:, -2].float(), labels[:, -1], reduction="none")
     return torch.cat((digit_nll, eos_nll[:, None]), dim=1)
 
 
@@ -100,12 +110,12 @@ def conditional_log_probs(model, prompts):
     """
     if (
         prompts.ndim != 2
-        or prompts.shape[1] != PROMPT_LENGTH
-        or not torch.all(prompts[:, QUERY_OFFSET] == QUERY)
-        or not torch.all(prompts[:, QUERY_OFFSET + 1] == X)
+        or prompts.shape[1] < 2
+        or not torch.all(prompts[:, 0] == BOS)
+        or not has_valid_query_marker(prompts)
         or not torch.all(prompts[:, -1] == Y)
     ):
-        raise ValueError(f"Expected {PROMPT_LENGTH}-token prompts ending in [QUERY] [X] a b [SEP] c d [Y]")
+        raise ValueError("Expected prompts with one [QUERY] [X], beginning with [BOS], and ending in [Y]")
     if prompts.shape[1] + 2 > model.config.max_position_embeddings:
         raise ValueError("Overlength generation; truncation is forbidden")
     batch = len(prompts)

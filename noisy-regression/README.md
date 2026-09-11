@@ -60,6 +60,14 @@ A digit pair `(a,b)` decodes to `-4 + (16*a+b)*8/255`. The spacing, approximatel
 quantization bins. The wider range reduces clipping but makes bins coarser
 than the preceding [-3,3] codec. Metadata records actual clipping fractions.
 
+Dimension variants repeat `x_j [SEP]` before the final coordinate in every
+context observation and query. With 64 observations, dimension 3 uses an
+844-token prompt and 847-token complete sequence, while dimension 4 uses a
+1,039-token prompt and 1,042-token complete sequence. Dimension 4 therefore
+requires both dataset capacity 1,042 and
+`sft.sh --max-position-embeddings 1042`; all other canonical model and
+optimization settings can remain unchanged.
+
 Qwen2 uses four query heads, two KV heads, capacity 1,024, RoPE theta 1,000,000,
 RMSNorm epsilon 1e-6, gated SiLU, tied embeddings and full causal attention.
 Dropout and sliding windows are disabled. Dataset generation, initialization

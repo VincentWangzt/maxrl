@@ -1,6 +1,7 @@
 """Explicit finite numerical vocabulary; no text tokenizer is involved."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -25,12 +26,57 @@ MIDPOINTS = RANGE_MIN + (np.arange(255, dtype=np.float64) + 0.5) * DELTA
 DIMENSION = 2
 OBSERVATIONS = 64
 SCALAR_TOKENS = 2
-INPUT_TOKENS = SCALAR_TOKENS * DIMENSION
-OBSERVATION_TOKENS = 1 + SCALAR_TOKENS + 1 + SCALAR_TOKENS + 1 + SCALAR_TOKENS + 1
-QUERY_OFFSET = 1 + OBSERVATIONS * OBSERVATION_TOKENS
-CONTEXT_SLICE = slice(1, QUERY_OFFSET)
-PROMPT_LENGTH = QUERY_OFFSET + 1 + 1 + SCALAR_TOKENS + 1 + SCALAR_TOKENS + 1
-SEQUENCE_LENGTH = PROMPT_LENGTH + SCALAR_TOKENS + 1
+
+
+@dataclass(frozen=True)
+class SequenceLayout:
+    dimension: int
+    observations: int
+
+    def __post_init__(self):
+        if not isinstance(self.dimension, int) or not isinstance(self.observations, int):
+            raise ValueError("Dimension and observation count must be integers")
+        if self.dimension < 1 or self.observations < 1:
+            raise ValueError("Dimension and observation count must be positive")
+
+    @property
+    def input_tokens(self):
+        return SCALAR_TOKENS * self.dimension
+
+    @property
+    def observation_tokens(self):
+        # [X], d digit pairs separated by [SEP], [Y], one digit pair, [EOO].
+        return 1 + self.input_tokens + (self.dimension - 1) + 1 + SCALAR_TOKENS + 1
+
+    @property
+    def query_offset(self):
+        return 1 + self.observations * self.observation_tokens
+
+    @property
+    def context_slice(self):
+        return slice(1, self.query_offset)
+
+    @property
+    def prompt_length(self):
+        # [QUERY], [X], d digit pairs and separators, then [Y].
+        return self.query_offset + 1 + 1 + self.input_tokens + (self.dimension - 1) + 1
+
+    @property
+    def sequence_length(self):
+        return self.prompt_length + SCALAR_TOKENS + 1
+
+
+def sequence_layout(dimension=DIMENSION, observations=OBSERVATIONS):
+    return SequenceLayout(dimension, observations)
+
+
+DEFAULT_LAYOUT = sequence_layout()
+INPUT_TOKENS = DEFAULT_LAYOUT.input_tokens
+OBSERVATION_TOKENS = DEFAULT_LAYOUT.observation_tokens
+QUERY_OFFSET = DEFAULT_LAYOUT.query_offset
+CONTEXT_SLICE = DEFAULT_LAYOUT.context_slice
+PROMPT_LENGTH = DEFAULT_LAYOUT.prompt_length
+SEQUENCE_LENGTH = DEFAULT_LAYOUT.sequence_length
 
 
 def quantize(values):
@@ -62,39 +108,57 @@ def decode(tokens):
 
 def build_sequences(context_x, context_y, query_x, query_y, capacity=1024):
     count = len(context_x)
+    if context_x.ndim != 3:
+        raise ValueError("Expected context_x with shape (batch, observations, dimension)")
+    layout = sequence_layout(context_x.shape[2], context_x.shape[1])
     if (
-        context_x.shape != (count, OBSERVATIONS, DIMENSION)
-        or context_y.shape != (count, OBSERVATIONS)
-        or query_x.shape != (count, DIMENSION)
+        context_y.shape != (count, layout.observations)
+        or query_x.shape != (count, layout.dimension)
         or query_y.shape != (count,)
     ):
         raise ValueError(
-            f"Expected (B,{OBSERVATIONS},{DIMENSION}), (B,{OBSERVATIONS}), (B,{DIMENSION}), (B,) continuous arrays"
+            f"Expected (B,{layout.observations},{layout.dimension}), (B,{layout.observations}), "
+            f"(B,{layout.dimension}), (B,) continuous arrays"
         )
-    if SEQUENCE_LENGTH > capacity:
-        raise ValueError(f"Sequence length {SEQUENCE_LENGTH} exceeds capacity {capacity}; truncation is forbidden")
-    sequence = np.empty((count, SEQUENCE_LENGTH), dtype=np.uint8)
+    if layout.sequence_length > capacity:
+        raise ValueError(
+            f"Sequence length {layout.sequence_length} exceeds capacity {capacity}; truncation is forbidden"
+        )
+    sequence = np.empty((count, layout.sequence_length), dtype=np.uint8)
     sequence[:, 0] = BOS
-    observations = sequence[:, CONTEXT_SLICE].reshape(count, OBSERVATIONS, OBSERVATION_TOKENS)
+    observations = sequence[:, layout.context_slice].reshape(
+        count, layout.observations, layout.observation_tokens
+    )
     observations[:, :, 0] = X
-    observations[:, :, 1:3] = encode(context_x[:, :, 0])
-    observations[:, :, 3] = SEP
-    observations[:, :, 4:6] = encode(context_x[:, :, 1])
-    observations[:, :, 6] = Y
-    observations[:, :, 7:9] = encode(context_y)
-    observations[:, :, 9] = EOO
-    sequence[:, QUERY_OFFSET] = QUERY
-    sequence[:, QUERY_OFFSET + 1] = X
-    sequence[:, QUERY_OFFSET + 2 : QUERY_OFFSET + 4] = encode(query_x[:, 0])
-    sequence[:, QUERY_OFFSET + 4] = SEP
-    sequence[:, QUERY_OFFSET + 5 : QUERY_OFFSET + 7] = encode(query_x[:, 1])
-    sequence[:, PROMPT_LENGTH - 1] = Y
-    sequence[:, PROMPT_LENGTH : PROMPT_LENGTH + SCALAR_TOKENS] = encode(query_y)
+    position = 1
+    for coordinate in range(layout.dimension):
+        observations[:, :, position : position + SCALAR_TOKENS] = encode(context_x[:, :, coordinate])
+        position += SCALAR_TOKENS
+        if coordinate + 1 < layout.dimension:
+            observations[:, :, position] = SEP
+            position += 1
+    observations[:, :, position] = Y
+    position += 1
+    observations[:, :, position : position + SCALAR_TOKENS] = encode(context_y)
+    observations[:, :, -1] = EOO
+
+    sequence[:, layout.query_offset] = QUERY
+    sequence[:, layout.query_offset + 1] = X
+    position = layout.query_offset + 2
+    for coordinate in range(layout.dimension):
+        sequence[:, position : position + SCALAR_TOKENS] = encode(query_x[:, coordinate])
+        position += SCALAR_TOKENS
+        if coordinate + 1 < layout.dimension:
+            sequence[:, position] = SEP
+            position += 1
+    sequence[:, position] = Y
+    sequence[:, layout.prompt_length : layout.prompt_length + SCALAR_TOKENS] = encode(query_y)
     sequence[:, -1] = EOS
     return sequence
 
 
-def codec_config():
+def codec_config(dimension=DIMENSION, observations=OBSERVATIONS):
+    layout = sequence_layout(dimension, observations)
     return {
         "vocab": VOCAB,
         "range": [RANGE_MIN, RANGE_MAX],
@@ -104,13 +168,13 @@ def codec_config():
         "nonfinite": "reject",
         "scalar_tokens": SCALAR_TOKENS,
         "eos_token_id": EOS,
-        "dimension": DIMENSION,
-        "observations": OBSERVATIONS,
-        "prompt_length": PROMPT_LENGTH,
-        "sequence_length": SEQUENCE_LENGTH,
+        "dimension": layout.dimension,
+        "observations": layout.observations,
+        "prompt_length": layout.prompt_length,
+        "sequence_length": layout.sequence_length,
     }
 
 
-def save_codec(directory):
+def save_codec(directory, dimension=DIMENSION, observations=OBSERVATIONS):
     path = Path(directory) / "codec.json"
-    path.write_text(json.dumps(codec_config(), indent=2) + "\n")
+    path.write_text(json.dumps(codec_config(dimension, observations), indent=2) + "\n")
