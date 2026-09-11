@@ -211,6 +211,11 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     device = select_device(config.device, config.precision)
+    if device.type == "cuda":
+        # Make the selected device visibly occupied before the potentially
+        # multi-minute dataset integrity scan, closing the post-preflight race.
+        reservation = torch.empty(1, device=device)
+        del reservation
     print(f"Loading and verifying frozen pool: {data_path}", flush=True)
     splits, metadata = load_pool(data_path)
     dataset_config = DatasetConfig(**metadata["config"])
