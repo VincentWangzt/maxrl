@@ -22,7 +22,7 @@ from noisy_regression.codec import (
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    train_count: int = 1_000_000
+    train_count: int = 10_000_000
     eval_count: int = 1_024
     dimension: int = DIMENSION
     observations: int = OBSERVATIONS
@@ -118,12 +118,15 @@ def prepare(directory, config):
     if overlap:
         raise ValueError(f"Found {len(overlap)} overlapping tokenized prompts across splits")
     metadata = {
-        "schema_version": 4,
+        "schema_version": 6,
         "config": asdict(config),
         "codec": codec_config(),
         "rng": "numpy.PCG64; independent OS entropy for each split; no fixed seeds",
-        "storage": "uncompressed npz; avoid compression overhead for the 1M pool",
-        "prompt_format": f"[BOS] ([X] x [Y] y) * {config.observations} [X] query [Y] answer",
+        "storage": "uncompressed npz; avoid compression overhead for the 10M pool",
+        "prompt_format": (
+            f"[BOS] ([X] x_1 [SEP] x_2 [Y] y [EOO]) * {config.observations} "
+            "[QUERY] [X] query_x_1 [SEP] query_x_2 [Y] answer [EOS]"
+        ),
         "numpy_version": np.__version__,
         "split_prompt_overlap": 0,
         "split_role": "held-out evaluation reused for checkpoint selection; no test split",
@@ -149,8 +152,8 @@ def prepare(directory, config):
 def load_pool(directory):
     directory = Path(directory)
     metadata = json.loads((directory / "metadata.json").read_text())
-    if metadata["schema_version"] != 4:
-        raise ValueError("Dataset schema mismatch: prepare a new d=2, n=64 pool with the [-3,3] codec")
+    if metadata["schema_version"] != 6:
+        raise ValueError("Dataset schema mismatch: prepare a new d=2, n=64 SEP/EOO pool with the [-4,4] codec")
     if metadata["codec"] != codec_config() or json.loads((directory / "codec.json").read_text()) != codec_config():
         raise ValueError("Dataset codec mismatch: scalar range and prompt layout must match the running code")
     DatasetConfig(**metadata["config"]).validate()

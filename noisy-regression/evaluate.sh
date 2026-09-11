@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="${REPO_ROOT}/.venv"
-ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_1m_xy_range3_sigma0p001"
-RUN_NAME="${1:-qwen2_4layer_d2_n64_1m_xy_range3_sft_80000_bs128_lr1e-4_warmup1600_constant_noclip_sigma0p001}"
+source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
+RUN_NAME="${1:-${CANONICAL_RUN_NAME}}"
 [[ $# -le 1 ]] || { echo "Usage: bash noisy-regression/evaluate.sh [RUN_NAME]" >&2; exit 2; }
-CHECKPOINT="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/checkpoint-80000"
+CHECKPOINT="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/checkpoint-20000"
 OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}/reevaluation-final"
-GPU_ID=0
+GPU_ID=2
 DEVICE="cuda:0"
 PRECISION="bf16"
 EVAL_BATCH_SIZE=32

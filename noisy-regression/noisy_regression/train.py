@@ -27,9 +27,9 @@ from noisy_regression.tracking import TrackingConfig, initialize_tracking
 
 @dataclass(frozen=True)
 class TrainConfig:
-    batch_size: int = 128
+    batch_size: int = 1024
     micro_batch_size: int = 128
-    max_steps: int = 80_000
+    max_steps: int = 20_000
     eval_interval: int = 500
     learning_rate: float = 1e-4
     min_learning_rate: float = 0.0
@@ -38,7 +38,8 @@ class TrainConfig:
     beta2: float = 0.95
     weight_decay: float = 0.01
     optimizer_epsilon: float = 1e-8
-    warmup_steps: int = 1_600
+    warmup_steps: int = 200
+    warmup_start_factor: float = 0.1
     max_grad_norm: float | None = None
     eval_batch_size: int = 32
     device: str = "cuda:0"
@@ -60,6 +61,8 @@ class TrainConfig:
             raise ValueError("Positive sizes required; effective batch must be divisible by microbatch")
         if not 0 <= self.warmup_steps < self.max_steps:
             raise ValueError("Require 0 <= warmup_steps < max_steps")
+        if not 0 <= self.warmup_start_factor <= 1:
+            raise ValueError("Require 0 <= warmup_start_factor <= 1")
         if self.learning_rate_schedule not in ("linear_warmup_cosine_decay", "linear_warmup_constant"):
             raise ValueError("Unknown learning-rate schedule")
         if (
@@ -153,16 +156,18 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     model.train()
     optimizer.zero_grad(set_to_none=True)
     indices = order.take(config.batch_size)
-    loss_sum = torch.zeros((), device=device)
+    answer_nll_sum = torch.zeros((), device=device)
+    eos_nll_sum = torch.zeros((), device=device)
     for start in range(0, config.batch_size, config.micro_batch_size):
         tokens = torch.tensor(
             train_tokens[indices[start : start + config.micro_batch_size]].astype(np.int64), device=device
         )
         with precision_context(device, config.precision):
-            nll = teacher_forced_nll(model, tokens).sum(1)
-            loss = nll.sum() / config.batch_size
+            token_nll = teacher_forced_nll(model, tokens)
+            loss = token_nll.sum() / config.batch_size
         loss.backward()
-        loss_sum += nll.detach().sum()
+        answer_nll_sum += token_nll[:, :2].detach().sum()
+        eos_nll_sum += token_nll[:, 2].detach().sum()
     if config.max_grad_norm is None:
         gradient_norm = torch.nn.utils.get_total_norm(
             (parameter.grad for parameter in model.parameters() if parameter.grad is not None),
@@ -179,7 +184,9 @@ def optimize_step(model, optimizer, scheduler, order, train_tokens, config, devi
     scheduler.step()
     return (
         {
-            "answer_nll": loss_sum.item() / config.batch_size,
+            "answer_nll": answer_nll_sum.item() / config.batch_size,
+            "eos_nll": eos_nll_sum.item() / config.batch_size,
+            "completion_nll": (answer_nll_sum + eos_nll_sum).item() / config.batch_size,
             "gradient_norm": float(gradient_norm),
             "learning_rate": lr,
         },
@@ -209,6 +216,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         config.max_steps,
         config.min_learning_rate,
         config.learning_rate_schedule,
+        warmup_start_factor=config.warmup_start_factor,
     )
     order = FrozenOrder(len(splits["train"]["tokens"]))
     step, previous_elapsed = 0, 0.0
@@ -228,6 +236,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                 config.max_steps,
                 config.min_learning_rate,
                 config.learning_rate_schedule,
+                warmup_start_factor=config.warmup_start_factor,
                 completed_steps=step,
             )
         resume_schedule = {
@@ -266,8 +275,10 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
+        "training_objective": "two constrained digit NLLs plus full-vocabulary EOS NLL",
         "learning_rate_schedule": (
-            f"{config.learning_rate_schedule}; linear warmup from {config.min_learning_rate:g} to "
+            f"{config.learning_rate_schedule}; linear warmup from "
+            f"{config.warmup_start_factor * config.learning_rate:g} to "
             f"{config.learning_rate:g}, then "
             + (
                 f"cosine decay to {config.min_learning_rate:g}"
@@ -284,7 +295,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "resume_schedule": resume_schedule,
         "deterministic_algorithms": True,
         "randomness": "Fresh initialization and training shuffle; no fixed seeds",
-        "likelihood_units": "nats per complete two-token answer",
+        "likelihood_units": "answer metrics are nats per two-digit value; training additionally supervises EOS",
         "evaluation_policy": "Full held-out pool plus the just-optimized training batch at evaluation steps",
     }
     write_json(output_path / "manifest.json", manifest)
@@ -452,7 +463,7 @@ def main():
     parser.add_argument("--project-name", default="noisy-regression-sft")
     parser.add_argument(
         "--experiment-name",
-        default="qwen2_4layer_d2_n64_1m_xy_range3_sft_80000_bs128_lr1e-4_warmup1600_constant_noclip_sigma0p001",
+        default="canonical_d2_n64_10m_sep_eoo_range4_sigma0p001_bs1024_lr1e-4",
     )
     parser.add_argument(
         "--model-config-json", required=True, help="Complete explicit ModelConfig JSON from the launcher"

@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults reproduce the 80K-step legacy-prompt, constant-LR experiment.
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="${REPO_ROOT}/.venv"
-ENV_FILE="${REPO_ROOT}/.env"
-DATA_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_1m_xy_range3_sigma0p001"
+# Canonical defaults; sweeps override only effective batch size or peak LR.
+source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
 RUN_NAME=""
 OUTPUT_DIR=""
 RESUME_CHECKPOINT="" # To resume, set a retained checkpoint AND a new OUTPUT_DIR.
-GPU_ID=0
+GPU_ID=2
 ALLOW_GPU_SHARING=false
 DEVICE="cuda:0"
 PRECISION="bf16"
-BATCH_SIZE=128
+BATCH_SIZE=1024
 MICRO_BATCH_SIZE=128
-MAX_STEPS=80000
+MAX_STEPS=20000
 EVAL_INTERVAL=500
 LEARNING_RATE=1e-4
 MIN_LEARNING_RATE=0
@@ -24,7 +21,8 @@ BETA1=0.9
 BETA2=0.95
 WEIGHT_DECAY=0.01
 OPTIMIZER_EPSILON=1e-8
-WARMUP_STEPS=1600
+WARMUP_STEPS=200
+WARMUP_START_FACTOR=0.1
 MAX_GRAD_NORM=none
 EVAL_BATCH_SIZE=32
 CPU_THREADS=4
@@ -36,16 +34,18 @@ NUM_HIDDEN_LAYERS=4
 while (( $# )); do
   case "$1" in
     --allow-gpu-sharing) ALLOW_GPU_SHARING=true; shift ;;
-    --gpu-id|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--max-grad-norm|--run-name|--output-dir)
+    --gpu-id|--batch-size|--num-hidden-layers|--max-steps|--learning-rate|--min-learning-rate|--learning-rate-schedule|--warmup-steps|--warmup-start-factor|--max-grad-norm|--run-name|--output-dir)
       [[ $# -ge 2 && -n "$2" ]] || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --gpu-id) GPU_ID="$2" ;;
+        --batch-size) BATCH_SIZE="$2" ;;
         --num-hidden-layers) NUM_HIDDEN_LAYERS="$2" ;;
         --max-steps) MAX_STEPS="$2" ;;
         --learning-rate) LEARNING_RATE="$2" ;;
         --min-learning-rate) MIN_LEARNING_RATE="$2" ;;
         --learning-rate-schedule) LEARNING_RATE_SCHEDULE="$2" ;;
         --warmup-steps) WARMUP_STEPS="$2" ;;
+        --warmup-start-factor) WARMUP_START_FACTOR="$2" ;;
         --max-grad-norm) MAX_GRAD_NORM="$2" ;;
         --run-name) RUN_NAME="$2" ;;
         --output-dir) OUTPUT_DIR="$2" ;;
@@ -59,12 +59,12 @@ done
   echo "Number of hidden layers must be a positive integer." >&2; exit 2;
 }
 MODEL_CONFIG_JSON='{
-  "vocab_size": 20, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
+  "vocab_size": 24, "hidden_size": 128, "num_hidden_layers": '"${NUM_HIDDEN_LAYERS}"',
   "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 512,
   "max_position_embeddings": 1024, "hidden_act": "silu", "rms_norm_eps": 1e-6,
   "rope_theta": 1000000.0, "tie_word_embeddings": true, "attention_dropout": 0.0,
   "use_sliding_window": false, "sliding_window": null,
-  "bos_token_id": 19, "pad_token_id": 18, "eos_token_id": null
+  "bos_token_id": 22, "pad_token_id": 21, "eos_token_id": 23
 }'
 if [[ -z "${RUN_NAME}" ]]; then
   clip_label="clip${MAX_GRAD_NORM}"
@@ -75,7 +75,12 @@ if [[ -z "${RUN_NAME}" ]]; then
   if [[ "${LEARNING_RATE_SCHEDULE}" == linear_warmup_constant ]]; then
     schedule_label=constant
   fi
-  RUN_NAME="qwen2_${NUM_HIDDEN_LAYERS}layer_d2_n64_1m_xy_range3_sft_${MAX_STEPS}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_warmup${WARMUP_STEPS}_${schedule_label}_${clip_label}_sigma0p001"
+  RUN_NAME="${RUN_PREFIX}_bs${BATCH_SIZE}_lr${LEARNING_RATE}"
+  if [[ "${NUM_HIDDEN_LAYERS}" != 4 || "${MAX_STEPS}" != 20000 || "${WARMUP_STEPS}" != 200 ||
+        "${WARMUP_START_FACTOR}" != 0.1 || "${LEARNING_RATE_SCHEDULE}" != linear_warmup_constant ||
+        "${MAX_GRAD_NORM}" != none || "${MIN_LEARNING_RATE}" != 0 ]]; then
+    RUN_NAME="${RUN_NAME}_${NUM_HIDDEN_LAYERS}layer_${MAX_STEPS}steps_warmup${WARMUP_STEPS}_start${WARMUP_START_FACTOR}_minlr${MIN_LEARNING_RATE}_${schedule_label}_${clip_label}"
+  fi
 fi
 if [[ -z "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR="${REPO_ROOT}/noisy-regression/checkpoints/${RUN_NAME}"
@@ -129,7 +134,7 @@ python -m noisy_regression.train --data "${DATA_DIR}" --output "${OUTPUT_DIR}" "
   --learning-rate "${LEARNING_RATE}" --min-learning-rate "${MIN_LEARNING_RATE}" \
   --learning-rate-schedule "${LEARNING_RATE_SCHEDULE}" --beta1 "${BETA1}" --beta2 "${BETA2}" \
   --weight-decay "${WEIGHT_DECAY}" --optimizer-epsilon "${OPTIMIZER_EPSILON}" \
-  --warmup-steps "${WARMUP_STEPS}" --max-grad-norm "${MAX_GRAD_NORM}" \
+  --warmup-steps "${WARMUP_STEPS}" --warmup-start-factor "${WARMUP_START_FACTOR}" --max-grad-norm "${MAX_GRAD_NORM}" \
   --eval-batch-size "${EVAL_BATCH_SIZE}" \
   --cpu-threads "${CPU_THREADS}" --log-interval "${LOG_INTERVAL}"
 exec python -m noisy_regression.report --run "${OUTPUT_DIR}"

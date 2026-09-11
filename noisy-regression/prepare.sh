@@ -2,11 +2,9 @@
 set -euo pipefail
 
 # All experiment settings are explicit here; no ambient experiment overrides.
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_DIR="${REPO_ROOT}/.venv"
-ENV_FILE="${REPO_ROOT}/.env"
-OUTPUT_DIR="${REPO_ROOT}/noisy-regression/data/fixed_d2_n64_1m_xy_range3_sigma0p001"
-TRAIN_COUNT=1000000
+source "$(dirname -- "${BASH_SOURCE[0]}")/config.sh"
+OUTPUT_DIR="${DATA_DIR}"
+TRAIN_COUNT=10000000
 EVAL_COUNT=1024
 DIMENSION=2
 OBSERVATIONS=64

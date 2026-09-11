@@ -17,8 +17,8 @@ These are three versions of the same example's target, not three model outputs.
 | `decoded_target_grid_value` | `decode(encode(y))`, the center represented by the two target tokens | Error against the numerical answer the model actually trains on |
 
 For example, a signal of 1.20 plus noise of 0.001 gives an outcome of 1.201.
-The codec rounds that outcome to approximately 1.211765. Its grid has 256 centers
-from -3 to 3, spaced by `6/255 ≈ 0.023529`; values beyond the range map to the
+The codec rounds that outcome to approximately 1.207843. Its grid has 256 centers
+from -4 to 4, spaced by `8/255 ≈ 0.031373`; values beyond the range map to the
 endpoints. “Continuous” means the original numerical value before this codec.
 “Noiseless” removes query noise, but the predictor still has noisy context and
 uncertainty about the unknown coefficients.
@@ -34,8 +34,8 @@ errors; that would additionally penalize the predictive distribution's spread.
 
 For a predictor independent of fresh query noise,
 `E[(prediction - y)^2] = E[(prediction - s)^2] + sigma^2`.
-The current pool uses sigma=0.001, so the expected added error is 0.000001; the
-preceding pool used sigma=0.01, giving 0.0001. The identity is an expectation, not an exact
+The current pool uses sigma=0.001, so the expected added error is 0.000001.
+The identity is an expectation, not an exact
 difference on a finite frozen pool. Quantization/clipping further changes the
 decoded-target error.
 
@@ -174,7 +174,8 @@ native step is the optimizer step; no duplicate step metric is logged.
 Every `eval` MSE/NLL/pass metric uses all 1,024 held-out examples at every
 evaluation, including step 0 and the final step. At each nonzero evaluation,
 the post-update model also enumerates all 256 answers on the just-optimized
-128-example batch. Its clean/noisy MSE is logged under `train_batch`; the batch
+effective batch (1,024 examples canonically; 512 or 2,048 in the batch sweep).
+Its clean/noisy MSE is logged under `train_batch`; the batch
 IDs and complete distribution summary stay in the JSONL artifact. This measures
 immediate training fit, not a stable population estimate, so it is expected to
 be noisier and more optimistic than held-out MSE. Evaluation NPZ files contain
@@ -212,8 +213,8 @@ bash noisy-regression/evaluate_ridge.sh
 ```
 
 Each creates a separate run in `noisy-regression-sft` and logs **once at step 0**.
-Current run names are `bayesian_continuous_d2_n64_1m_xy_range3_sigma0p001` and
-`ridge_quantized_d2_n64_1m_xy_range3_sigma0p001`, using the new 1M-pool evaluation split.
+Current run names are `bayesian_continuous_d2_n64_10m_sep_eoo_range4_sigma0p001` and
+`ridge_quantized_d2_n64_10m_sep_eoo_range4_sigma0p001`, using the 10M-pool evaluation split.
 Each records the same 14 evaluation/pass scores, entropy, and two timing fields:
 17 history keys total. No completions are sampled and no model is trained.
 The shared keys allow comparing methods in the same panel or run-summary table;
