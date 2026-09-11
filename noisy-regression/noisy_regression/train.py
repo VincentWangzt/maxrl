@@ -216,6 +216,8 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
     output_path = Path(output_path).resolve()
     output_path.mkdir(parents=True, exist_ok=False)
     model = create_model(model_config).to(device)
+    # Full-batch training (including 2,048 examples) must fit on a single L40.
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     optimizer, decay_groups = make_optimizer(
         model, config.learning_rate, config.beta1, config.beta2, config.weight_decay, config.optimizer_epsilon
     )
@@ -290,6 +292,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
         "training": asdict(config),
         "architecture": asdict(model_config),
         "parameter_count": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "activation_checkpointing": {"enabled": True, "use_reentrant": False},
         "optimizer_parameter_groups": decay_groups,
         "optimizer": "AdamW; FP32 parameters/states, foreach=False, fused=False",
         "training_objective": "two constrained digit NLLs plus full-vocabulary EOS NLL",
@@ -336,6 +339,7 @@ def train(data_path, output_path, config, model_config, resume=None, tracking_co
                     for name in (
                         "architecture",
                         "parameter_count",
+                        "activation_checkpointing",
                         "optimizer_parameter_groups",
                         "versions",
                         "git_commit",

@@ -754,6 +754,7 @@ def test_wandb_combines_same_step_metrics_without_accumulation(tmp_path, recorde
     assert init_arguments["mode"] == "online" and init_arguments["project"] == tracking.project_name
     assert init_arguments["config"]["dataset"]["sigma"] == 0.01
     assert init_arguments["config"]["micro_batch_size"] == init_arguments["config"]["batch_size"] == 4
+    assert init_arguments["config"]["activation_checkpointing"] == {"enabled": True, "use_reentrant": False}
     assert init_arguments["config"]["max_grad_norm"] == max_grad_norm
     assert json.loads((tmp_path / "run" / "manifest.json").read_text())["training"]["max_grad_norm"] == max_grad_norm
     assert init_arguments["config"]["dashboard_schema_version"] == 5
